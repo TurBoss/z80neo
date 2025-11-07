@@ -1,0 +1,6 @@
+src/.clangd
+src/.cproject
+src/.project
+src/.clang-format
+src/build/
+src/turboram/build/
