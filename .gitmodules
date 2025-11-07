@@ -1,0 +1,3 @@
+[submodule "src/turboram/libs/pico_fatfs"]
+	path = src/turboram/libs/pico_fatfs
+	url = https://github.com/TurBoss/pico_fatfs
