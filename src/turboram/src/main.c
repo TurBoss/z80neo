@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+
+#include <bsp/board_api.h>
+#include <tusb.h>
+
 // Pico2
 #include <hardware/adc.h>
 #include <hardware/clocks.h>
@@ -257,12 +261,15 @@ unsigned char decode_hex(char c) {
 		return -1;
 }
 
+// unused
+
 unsigned char reverse_bits(unsigned char b) {
 	return (b & 0b00000001) << 3 | (b & 0b00000010) << 1 |
 		   (b & 0b00000100) >> 1 | (b & 0b00001000) >> 3 |
 		   (b & 0b00010000) << 3 | (b & 0b00100000) << 1 |
 		   (b & 0b01000000) >> 1 | (b & 0b10000000) >> 3;
 }
+
 
 void clear_bank(uint8_t bank) {
 	for (uint32_t adr = 0; adr < RAM_SIZE; adr++) {
@@ -709,7 +716,7 @@ int sd_read_init() {
 	FIL fil;
 
 	int ret;
-	char filename[] = "Z80.INI";
+	char filename[] = "Z80NEO.INI";
 	char buf[FILE_BUFF_SIZE];
 	bool skip = false;
 
@@ -743,8 +750,8 @@ int sd_read_init() {
 		}
 	}
 
-	// 6116.INI:
-	// MPF-1P
+	// Z80.INI:
+	// Z80))
 	// F00
 	// D80
 	// C00
@@ -752,10 +759,10 @@ int sd_read_init() {
 	// 500
 	// 200
 
-	// COUNTER1.MPF
-	// COUNTER2.MPF
-	// COUNTER3.MPF
-	// COUNTER4.MPF
+	// COUNTER1.HEX
+	// COUNTER2.HEX
+	// COUNTER3.HEX
+	// COUNTER4.HEX
 	// 0
 
 	while (!skip) {
@@ -1224,14 +1231,12 @@ void load_file(bool quiet) {
 	//
 	//
 	//
-
-				
-		
-					
+	
 	if (DEBUG_LOAD){		
 		print_string(0, 0, "OFFSET:");
 		print_string(0, 2, "DATA:  ");
 	}
+	
 	while (true) {
 
 		memset(&buf, 0, sizeof(buf));
@@ -1278,88 +1283,92 @@ void load_file(bool quiet) {
 				if (!readingOrigin) {	
 					
 					
-					
 					if (DEBUG_LOAD){
 						print_string(8, 3, "  ");
 					}
+					
 					switch (count) {
-					case 0:
-						val = decoded * 16;
-					
-					
-						if (DEBUG_LOAD){
-							sprintf(text_buffer, "%02x", val);
-							print_string(8, 3, text_buffer);
-						}
-						count = 1;
-						break;
-					case 1:
-						val += decoded;
-					
-					
-						if (DEBUG_LOAD){
-							sprintf(text_buffer, "%02x", val);
-							print_string(8, 3, text_buffer);
-						}
-						count = 0;
-						sdram[pc++] = val;
-						break;
+						
+						case 0:
+							val = decoded * 16;
+						
+							if (DEBUG_LOAD){
+								sprintf(text_buffer, "%02x", val);
+								print_string(8, 3, text_buffer);
+							}
+							
+							count = 1;
+							break;
+						case 1:
+							val += decoded;
+						
+						
+							if (DEBUG_LOAD){
+								sprintf(text_buffer, "%02x", val);
+								print_string(8, 3, text_buffer);
+							}
+							count = 0;
+							sdram[pc++] = val;
+							break;
 					}
 					
 				} else {
-					print_string(8, 3, "        ");
-
+					if (DEBUG_LOAD){
+					    print_string(8, 3, "        ");
+					}
+					
 					switch (count) {
-					case 0:
-						pc = decoded * 16 * 16 * 16;
-					
-						if (DEBUG_LOAD){
-					
-							sprintf(text_buffer, "%8x", pc);
-							print_string(6, 1, text_buffer);
-						}
-						count = 1;
-						break;
-					case 1:
-						pc += decoded * 16 * 16;
-					
-						if (DEBUG_LOAD){
-					
-							sprintf(text_buffer, "%8x", pc);
-							print_string(6, 1, text_buffer);
-						}
-						count = 2;
-						break;
-					case 2:
-						pc += decoded * 16;
-					
-						if (DEBUG_LOAD){
-					
-							sprintf(text_buffer, "%8x", pc);
-							print_string(6, 1, text_buffer);
-						}
-						count = 3;
-						break;
-					case 3:
-						pc += decoded;
-					
-						if (DEBUG_LOAD){
-							sprintf(text_buffer, "%8x", pc);
-							print_string(6, 1, text_buffer);
-						}
-						count = 0;
-						readingOrigin = false;
 						
-						pc -= 0x1800;
-						break;
-					default:
-						break;
+						case 0:
+							pc = decoded * 16 * 16 * 16;
+						
+							if (DEBUG_LOAD){
+						
+								sprintf(text_buffer, "%8x", pc);
+								print_string(6, 1, text_buffer);
+							}
+							count = 1;
+							break;
+						case 1:
+							pc += decoded * 16 * 16;
+						
+							if (DEBUG_LOAD){
+						
+								sprintf(text_buffer, "%8x", pc);
+								print_string(6, 1, text_buffer);
+							}
+							count = 2;
+							break;
+						case 2:
+							pc += decoded * 16;
+						
+							if (DEBUG_LOAD){
+						
+								sprintf(text_buffer, "%8x", pc);
+								print_string(6, 1, text_buffer);
+							}
+							count = 3;
+							break;
+						case 3:
+							pc += decoded;
+						
+							if (DEBUG_LOAD){
+								sprintf(text_buffer, "%8x", pc);
+								print_string(6, 1, text_buffer);
+							}
+							count = 0;
+							readingOrigin = false;
+							
+							pc -= 0x1800;
+							break;
+						default:
+							break;
 					}
 				}
-			if (DEBUG_LOAD){
-		 		sleep_ms(10);
-			}
-		    
+				if (DEBUG_LOAD){
+			 		sleep_ms(10);
+				}
+			    
 			}
 		}
 		line++;
@@ -1382,7 +1391,9 @@ void load_file(bool quiet) {
 	//
 
 	
-    sleep_ms(100);
+	if (DEBUG_LOAD){
+ 		sleep_ms(100);
+	}
     
 	if (!quiet) {
 		clear_screen();
@@ -1692,6 +1703,8 @@ void set_bus_dir(int direction) {
 
 
 //
+
+
 /*
 void nop_delay(){
 	 __asm volatile (" nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n");
@@ -1714,7 +1727,6 @@ uint8_t w_delay = 3;
 void bus_callback(uint pin, uint32_t events) {
 
 
-	
 	if (pin == IORQ_INPUT) {
 
 
@@ -1734,10 +1746,7 @@ void bus_callback(uint pin, uint32_t events) {
 		
 		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
 
-		// sleep_ms(40);
-	
-		sleep_ms(0);
-		
+
 		// DIRECTION 2 ON HIGH ADDRESS
 		gpio_put(DIR1_OUT, 1);
 		gpio_put(DIR2_OUT, 0);
@@ -1754,9 +1763,6 @@ void bus_callback(uint pin, uint32_t events) {
 		
 		high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)	<< 8; // A8 - A15
 		// 	high_adr =  0x00;
-
-		// sleep_ms(40);
-		
 		
 		// m_adr = 0x00;
 		m_adr = low_adr | high_adr;
@@ -1769,12 +1775,12 @@ void bus_callback(uint pin, uint32_t events) {
 
 			// sleep_ms(0);
 			
-			// SLECT 3 DATA MEMORY READ
+			// SLECT 3 DATA
 			gpio_put(SEL1_OUT, 1);
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 0);
 
-			// DIRECTION 3 DATA MEMORY READ
+			// DIRECTION 3 DATA
 			gpio_put(DIR1_OUT, 1);
 			gpio_put(DIR2_OUT, 1);
 			gpio_put(DIR3_OUT, 0);
@@ -1789,16 +1795,17 @@ void bus_callback(uint pin, uint32_t events) {
 			
 			r_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
 
-			ram[cur_bank][m_adr] = r_op;
 
-			// written = true;
-
+			if (low_adr == 0x40){
+				printf("%c", r_op);
+			}
+			else{
+				ram[cur_bank][m_adr] = r_op;
+			}
+	
 			sleep_ms(0);
 		
 			gpio_set_dir_masked(bus_mask, 0);
-		
-			// gpio_put_masked(data_mask, 0);
-			// gpio_put_masked(data_mask, (0 << BUS_GPIO_START));
 
 		}
 
@@ -1898,23 +1905,18 @@ void bus_callback(uint pin, uint32_t events) {
 				m_adr = low_adr | high_adr;
 				
 				
-				
-					
 		
-				// DIRECTION 3 DATA MEMORY READ
+				// DIRECTION 3 DATA
 				gpio_put(DIR1_OUT, 1);
 				gpio_put(DIR2_OUT, 1);
 				gpio_put(DIR3_OUT, 1);
 				
-				// SLECT 3 DATA MEMORY READ
+				// SLECT 3 DATA
 				gpio_put(SEL1_OUT, 1);
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 0);
-	
-				//sleep_ms(w_delay);
-				
 			
-					
+				
 				w_op = ram[cur_bank][m_adr];
 				
 		
@@ -1923,15 +1925,9 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_set_dir_masked(bus_mask, bus_mask);
 		
 				gpio_put_masked(bus_mask, (w_op << BUS_GPIO_START));
-	
-	//				w_op = ram[cur_bank][m_adr];
-	//
-	//				gpio_set_dir_masked(data_mask, data_mask);
-	//				gpio_put_masked(data_mask, (w_op << BUS_GPIO_START));
-				// written = true;
-	
+
+
 				sleep_ms(w_delay);
-				// gpio_put_masked(bus_mask, 0 );
 				
 				// DIRECTION OFF
 				gpio_put(DIR1_OUT, 1);
@@ -1956,6 +1952,59 @@ void bus_callback(uint pin, uint32_t events) {
 //
 
 
+void custom_cdc_task(void)
+{
+    // polling CDC interfaces if wanted
+
+    // Check if CDC interface 0 (for pico sdk stdio) is connected and ready
+
+    if (tud_cdc_n_connected(0)) {
+        // print on CDC 0 some debug message
+        // printf("Connected to CDC 0\n");
+        // sleep_ms(5000); // wait for 5 seconds
+    }
+}
+
+// callback when data is received on a CDC interface
+void tud_cdc_rx_cb(uint8_t itf)
+{
+	
+    // allocate buffer for the data in the stack
+    uint8_t buf[CFG_TUD_CDC_RX_BUFSIZE];
+
+
+    // printf("RX CDC %d\n", itf);
+
+
+
+    // read the available data 
+    // | IMPORTANT: also do this for CDC0 because otherwise
+    // | you won't be able to print anymore to CDC0
+    // | next time this function is called
+    uint32_t count = tud_cdc_n_read(itf, buf, sizeof(buf));
+
+    // check if the data was received on the second cdc interface
+    if (itf == 1) {
+        // process the received data
+        buf[count] = 0; // null-terminate the string
+        // now echo data back to the console on CDC 0
+        printf("Received on CDC 1: %s\n", buf);
+
+        // and echo back OK on CDC 1
+        tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
+        tud_cdc_n_write_flush(itf);
+    }
+    else {
+        // process the received data
+        buf[count] = 0; // null-terminate the string
+        // now echo data back to the console on CDC 0
+        printf("Received on CDC 0: %s\n", buf);
+
+        // and echo back OK on CDC 1
+//        tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
+//        tud_cdc_n_write_flush(itf);
+	}
+}
 
 static uint8_t display_buf[SSD1306_BUF_LEN];
 
@@ -1972,7 +2021,15 @@ int main() {
 	//
 	//
 	//
+	
+    board_init();
+    tusb_init();
 
+    // TinyUSB board init callback after init
+    if (board_init_after_tusb) {
+        board_init_after_tusb();
+    }
+    
 	stdio_init_all();
 
 	sleep_ms(100);
@@ -2223,6 +2280,11 @@ int main() {
 			while (disabled) {
 			};
 		}
+		
+		tud_task();
+		
+		// custom tasks
+		custom_cdc_task();
 
 		// ADDRESS
 

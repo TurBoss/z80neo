@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.25)
 include(pico_sdk_import.cmake)
 include(pico_extras_import_optional.cmake)
 
-
+set(PICO_BOARD pico_2)
 set(PROJECT_NAME "turboram" C CXX ASM)
 
 

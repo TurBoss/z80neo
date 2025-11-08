@@ -3,7 +3,6 @@ export PATH=/opt/riscv/bin:$PATH
 export PICO_SDK_PATH=/home/turboss/Dev/PICO/pico-sdk
 export PICO_EXTRAS_PATH=/home/turboss/Dev/PICO/pico-extras
 
-
 cmake  -B build -S . -DPICO_BOARD=pico2 -DPICO_PLATFORM=rp2350-riscv &&
 cmake --build build --parallel 1 &&
 
