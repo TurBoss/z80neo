@@ -2,7 +2,7 @@ z80neo
 ======
 
 
-![z80neo logo](https://github.com/turboss/z80neo/blob/main/images/logo.png?raw=true)
+![z80neo logo](https://github.com/turboss/z80neo/blob/main/images/logo_mon.png?raw=true)
 
 
 
@@ -11,6 +11,7 @@ z80neo
 A Raspberry Pi Pico 2 (RP235x) based computer arround the z80 cpu
 
 SD Card Interface
+
 Serial Port Interface
 
 
