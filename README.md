@@ -15,6 +15,34 @@ Schematics
 ![z80neo schematics](https://github.com/turboss/z80neo/blob/main/images/z80neo.png?raw=true)
 
 
+Software
+========
+
+- z88dk-asm
+
+	https://github.com/z88dk/z88dk/
+
+
+```ASM
+PORT_LEDS: equ 0x40
+VAL_A equ 0xBA
+VAL_B equ 0xAB
+
+main:
+  ld	sp, 0x3fff
+  
+loop:
+  ld    A, VAL_A
+  out	(PORT_LEDS), A
+    
+  ld    A, VAL_B
+  out	(PORT_LEDS), A
+  
+  JP	loop
+
+topOfStack
+```
+
 
 pictures
 ========
@@ -37,8 +65,8 @@ Referemces
 
 - picoram6116
 
-https://github.com/lambdamikel/picoram6116
+	https://github.com/lambdamikel/picoram6116
 
 - neo6502 
 
-https://github.com/OLIMEX/Neo6502
+	https://github.com/OLIMEX/Neo6502
