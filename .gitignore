@@ -4,3 +4,5 @@ src/.project
 src/.clang-format
 src/build/
 src/turboram/build/
+.project
+src/turboram/.cproject
