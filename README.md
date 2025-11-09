@@ -2,9 +2,37 @@ z80neo
 ======
 
 
+![z80neo logo](https://github.com/turboss/z80neo/blob/main/images/logo.png?raw=true)
+
+
+
 - Another z80 board
 
+A Raspberry Pi Pico 2 (RP235x) based computer arround the z80 cpu
+
+SD Card Interface
+Serial Port Interface
+
+
+
 https://github.com/turboss/z80neo
+
+
+
+Join live chat
+
+
+- matrix
+
+	https://matrix.to/#/#z80neo:jauriarts.org
+
+-discord
+
+	todo
+
+- IRC
+
+	todo
 
 
 
