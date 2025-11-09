@@ -27,7 +27,7 @@ Join live chat
 
 	https://matrix.to/#/#z80neo:jauriarts.org
 
--discord
+- discord
 
 	todo
 
