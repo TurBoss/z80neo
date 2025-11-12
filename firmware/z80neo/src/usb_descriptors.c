@@ -10,7 +10,7 @@
 // set some example Vendor and Product ID
 // the board will use to identify at the host
 #define _PID_MAP(itf, n)  ( (CFG_TUD_##itf) << (n) )
-#define CDC_EXAMPLE_VID     0xCafe
+#define CDC_EXAMPLE_VID     0xCAFE
 // use _PID_MAP to generate unique PID for each interface
 #define CDC_EXAMPLE_PID     (0x4000 | _PID_MAP(CDC, 0))
 // set USB 2.0
@@ -114,12 +114,12 @@ enum {
 char const *string_desc_arr[] = {
     // switched because board is little endian
     (const char[]) { 0x09, 0x04 },  // 0: supported language is English (0x0409)
-    "Raspberry Pi",                 // 1: Manufacturer
-    "Pico (2)",                     // 2: Product
+    "JauriaStudios",                // 1: Manufacturer
+    "z80neo",                       // 2: Product
     NULL,                           // 3: Serials (null so it uses unique ID if available)
-    "Pico SDK stdio"                // 4: CDC Interface 0
-    "Custom CDC",                   // 5: CDC Interface 1,
-    "RPiReset"                      // 6: Reset Interface
+    "Serial 1"                      // 4: CDC Interface 0
+    "Serial 2",                     // 5: CDC Interface 1,
+    "Reset"                         // 6: Reset Interface
 };
 
 // buffer to hold the string descriptor during the request | plus 1 for the null terminator

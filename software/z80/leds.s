@@ -1,4 +1,4 @@
-PORT_LEDS: equ 0x40
+PORT_LEDS: equ 0x80
 VAL_A equ 0xCE
 VAL_B equ 0xEC
 

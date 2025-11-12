@@ -33,6 +33,21 @@
 #define CLK_SLOW_DEFAULT (100 * KHZ)
 #define CLK_FAST_DEFAULT (10 * MHZ)
 
+
+#define SERIAL_PORT 0x80
+
+// Buffer for received data
+#define BUFFER_SIZE 256
+
+static char rx_buffer[BUFFER_SIZE];
+static int buffer_index = 0;
+
+// PWM CLK slice
+uint slice;
+
+uint8_t sbuf[CFG_TUD_CDC_RX_BUFSIZE];
+
+
 bool spi_configured;
 
 struct render_area frame_area = {
@@ -91,14 +106,14 @@ char *init_and_mount_sd_card(void);
 
 void load_file(bool quiet);
 
-void pgm1();
-void pgm2();
+void load();
+void save();
 
 //
 //
 //
 
-#define VERSION "  v0.1 - alpha  "
+#define VERSION "  v0.2 - alpha  "
 
 //
 // ADC Configuration (MPF.INI file!)
@@ -571,7 +586,7 @@ void display_loop() {
 			switch (buttons) {
 			case UP:
 				if (!tbmon_loaded) {
-					pgm1();
+					load();
 					sleep_ms(DISPLAY_DELAY);
 					sleep_ms(DISPLAY_DELAY);
 				}
@@ -598,7 +613,7 @@ void display_loop() {
 
 			case DOWN:
 				if (!tbmon_loaded) {
-					pgm2();
+					save();
 					sleep_ms(DISPLAY_DELAY);
 					sleep_ms(DISPLAY_DELAY);
 				}
@@ -1184,7 +1199,7 @@ int create_name() {
 }
 
 //
-// PGM 1 - Load from SD Card
+// Load file
 //
 
 void load_file(bool quiet) {
@@ -1420,6 +1435,7 @@ void load_file(bool quiet) {
 //					 ((b & 0b00000000000000000000000000000100) ? 1 : 0) << 0x8 |
 //					 ((b & 0b00000000000000000000000000001000) ? 1 : 0) << 0x9 |
 //					 ((b & 0b00000000000000000000000000010000) ? 1 : 0) << 0xA;
+//		ram[cur_bank][b] = sdram[i];
 		ram[cur_bank][b] = sdram[b];
 	}
 
@@ -1430,7 +1446,12 @@ void load_file(bool quiet) {
 	return;
 }
 
-void pgm1() {
+
+//
+// PGM 1 - Load from SD Card
+//
+
+void load() {
 
 	int aborted = select_file();
 	clear_screen();
@@ -1530,24 +1551,25 @@ void load_init_progs(void) {
 // PGM 2 - Save to SD Card
 //
 
-void pgm2() {
+void save() {
 
 	// 0800
 	// 000 - 7FFF
 
 	for (uint32_t b = 0; b < RAM_SIZE; b++) {
-		uint32_t i = ((b & 0b00000000000000000000000000100000) ? 1 : 0) << 0x5 |
-					 ((b & 0b00000000000000000000000001000000) ? 1 : 0) << 0x0 |
-					 ((b & 0b00000000000000000000000010000000) ? 1 : 0) << 0x1 |
-					 ((b & 0b00000000000000000000000100000000) ? 1 : 0) << 0x2 |
-					 ((b & 0b00000000000000000000001000000000) ? 1 : 0) << 0x3 |
-					 ((b & 0b00000000000000000000010000000000) ? 1 : 0) << 0x4 |
-					 ((b & 0b00000000000000000000000000000001) ? 1 : 0) << 0x6 |
-					 ((b & 0b00000000000000000000000000000010) ? 1 : 0) << 0x7 |
-					 ((b & 0b00000000000000000000000000000100) ? 1 : 0) << 0x8 |
-					 ((b & 0b00000000000000000000000000001000) ? 1 : 0) << 0x9 |
-					 ((b & 0b00000000000000000000000000010000) ? 1 : 0) << 0xA;
-		sdram[b] = ram[cur_bank][i];
+//		uint32_t i = ((b & 0b00000000000000000000000000100000) ? 1 : 0) << 0x5 |
+//					 ((b & 0b00000000000000000000000001000000) ? 1 : 0) << 0x0 |
+//					 ((b & 0b00000000000000000000000010000000) ? 1 : 0) << 0x1 |
+//					 ((b & 0b00000000000000000000000100000000) ? 1 : 0) << 0x2 |
+//					 ((b & 0b00000000000000000000001000000000) ? 1 : 0) << 0x3 |
+//					 ((b & 0b00000000000000000000010000000000) ? 1 : 0) << 0x4 |
+//					 ((b & 0b00000000000000000000000000000001) ? 1 : 0) << 0x6 |
+//					 ((b & 0b00000000000000000000000000000010) ? 1 : 0) << 0x7 |
+//					 ((b & 0b00000000000000000000000000000100) ? 1 : 0) << 0x8 |
+//					 ((b & 0b00000000000000000000000000001000) ? 1 : 0) << 0x9 |
+//					 ((b & 0b00000000000000000000000000010000) ? 1 : 0) << 0xA;
+//		sdram[b] = ram[cur_bank][i];
+		sdram[b] = ram[cur_bank][b];
 	}
 
 	clear_screen();
@@ -1723,6 +1745,7 @@ uint8_t r_delay = 3;
 uint8_t rd_delay = 3;
 uint8_t w_delay = 3;
 
+char serial_buf[64];
 
 void bus_callback(uint pin, uint32_t events) {
 
@@ -1796,15 +1819,21 @@ void bus_callback(uint pin, uint32_t events) {
 			r_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
 
 
-			if (low_adr == 0x40){
-				printf("%c", r_op);
+
+			if (m_adr == SERIAL_PORT){
+				
+				// printf("%c", r_op);
+				
+				sprintf(serial_buf, "%c\0", r_op);
+				
+				tud_cdc_n_write(0, serial_buf, 1);
+		        tud_cdc_n_write_flush(0);
+		        
 			}
 			else{
 				ram[cur_bank][m_adr] = r_op;
 			}
-	
-			sleep_ms(0);
-		
+			
 			gpio_set_dir_masked(bus_mask, 0);
 
 		}
@@ -1965,12 +1994,14 @@ void custom_cdc_task(void)
     }
 }
 
+
+
 // callback when data is received on a CDC interface
 void tud_cdc_rx_cb(uint8_t itf)
 {
 	
     // allocate buffer for the data in the stack
-    uint8_t buf[CFG_TUD_CDC_RX_BUFSIZE];
+    
 
 
     // printf("RX CDC %d\n", itf);
@@ -1981,24 +2012,27 @@ void tud_cdc_rx_cb(uint8_t itf)
     // | IMPORTANT: also do this for CDC0 because otherwise
     // | you won't be able to print anymore to CDC0
     // | next time this function is called
-    uint32_t count = tud_cdc_n_read(itf, buf, sizeof(buf));
+    uint32_t count = tud_cdc_n_read(itf, sbuf, sizeof(sbuf));
 
     // check if the data was received on the second cdc interface
+    
     if (itf == 1) {
         // process the received data
-        buf[count] = 0; // null-terminate the string
+        sbuf[count] = 0; // null-terminate the string
         // now echo data back to the console on CDC 0
-        printf("Received on CDC 1: %s\n", buf);
+        printf("RX1: %s\n", sbuf);
 
         // and echo back OK on CDC 1
-        tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
-        tud_cdc_n_write_flush(itf);
+        // tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
+        // tud_cdc_n_write_flush(itf);
     }
+    
     else {
         // process the received data
-        buf[count] = 0; // null-terminate the string
+        sbuf[count] = 0; // null-terminate the string
+        
         // now echo data back to the console on CDC 0
-        printf("Received on CDC 0: %s\n", buf);
+        printf("RX0: %s\n", sbuf);
 
         // and echo back OK on CDC 1
 //        tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
@@ -2006,39 +2040,24 @@ void tud_cdc_rx_cb(uint8_t itf)
 	}
 }
 
-static uint8_t display_buf[SSD1306_BUF_LEN];
 
-bool previous_ce = false;
-bool previous_we = false;
 
-int main() {
 
-	// Set system clock speed.
-	// 125 MHz
 
-	// set_sys_clock_pll(1100000000, 4, 1);
 
-	//
-	//
-	//
+
+
+
+
+uint pwm_set_freq_duty(uint gpio, uint32_t freq, float duty_cycle) {
 	
-    board_init();
-    tusb_init();
-
-    // TinyUSB board init callback after init
-    if (board_init_after_tusb) {
-        board_init_after_tusb();
-    }
-    
-	stdio_init_all();
-
-	sleep_ms(100);
+	// ============================================================
 
 	// Tell GPIO 0 it is allocated to the PWM
-	gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PWM);
+	gpio_set_function(gpio, GPIO_FUNC_PWM);
 
 	// Find out which PWM slice is connected to GPIO 0 (it's slice 0)
-	uint slice_num = pwm_gpio_to_slice_num(GPIO_PWM_SIG);
+	uint slice_num = pwm_gpio_to_slice_num(gpio);
 
 	// Set the PWM frequency to 50 Hz
 	// The system clock is typically 125 MHz, so we need to divide it down
@@ -2057,7 +2076,55 @@ int main() {
 	// Set the duty cycle
 	pwm_set_chan_level(slice_num, PWM_CHAN_A, 2049); // between 0 and 4096
 
+	// ============================================================
+	return slice_num;
+    
+}
+
+void enable_clk(uint slice_num, bool enable){
+
+    pwm_set_enabled(slice_num, enable);
+}
+
+
+
+
+
+static uint8_t display_buf[SSD1306_BUF_LEN];
+
+bool previous_ce = false;
+bool previous_we = false;
+
+
+int main() {
+
+	// Set system clock speed.
+	// 125 MHz
+
+	// set_sys_clock_pll(1100000000, 4, 1);
+
+	//
+	//
+	//
 	
+	
+	// USB
+    board_init();
+    tusb_init();
+
+    // TinyUSB board init callback after init
+    if (board_init_after_tusb) {
+        board_init_after_tusb();
+    }
+    
+	stdio_init_all();
+
+	sleep_ms(100);
+
+
+	slice = pwm_set_freq_duty(GPIO_PWM_SIG, 50, 50.0f);
+	
+
 
 	pico_fatfs_spi_config_t fs_config = {
 		spi0, // if unmatched SPI pin assignments with spi0/spi1 or explicitly
@@ -2070,7 +2137,9 @@ int main() {
 		true // use internal pullup
 	};
 
+
 	spi_configured = pico_fatfs_set_config(&fs_config);
+
 
 	gpio_init(LED_PIN);
 	gpio_set_dir(LED_PIN, GPIO_OUT);
@@ -2098,11 +2167,14 @@ int main() {
 	ssd1306_setup();
 
 	calc_render_area_buflen(&frame_area);
+	
 	// zero the entire display
 	memset(display_buf, 0, SSD1306_BUF_LEN);
 	render(display_buf, &frame_area);
 
+
 	show_logo();
+
 
 	sleep_ms(DISPLAY_DELAY_LONG);
 	sleep_ms(DISPLAY_DELAY_LONG);
@@ -2148,9 +2220,12 @@ int main() {
 
 	show_info();
 
+
+
 	//
 	// INIT GPIO
 	//
+
 
 	// BUS GPIO 0 <--> 8
 	for (gpio = BUS_GPIO_START; gpio < BUS_GPIO_END; gpio++) {
@@ -2159,6 +2234,7 @@ int main() {
 		gpio_set_function(gpio, GPIO_FUNC_SIO);
 		gpio_set_dir(gpio, GPIO_IN);
 	}
+
 
 	// ADDRESS SELECT 0 <--> 7
 
@@ -2232,22 +2308,29 @@ int main() {
 	gpio_set_dir(RD_INPUT, GPIO_IN);
 	gpio_set_inover(RD_INPUT, GPIO_OVERRIDE_NORMAL);
 
+
 	//
 	//
 	//
+
 
 	m_adr = 0;
 	r_op = 0;
 	w_op = 0;
 
+
 	multicore_launch_core1(display_loop);
+
 
 	while (DEBUG_ADC) {
 		sleep_ms(1000);
 	}
+	
+	
 	//
 	//
 	//
+
 
 	read = false;
 	written = false;
@@ -2269,8 +2352,11 @@ int main() {
 	//	gpio_set_irq_enabled(RD_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 	// 	gpio_set_irq_enabled(WR_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 
-	// Set the PWM running
-	pwm_set_enabled(slice_num, true);
+
+
+	// Enable CPU clock	
+	enable_clk(slice, true);
+	
 	
 	while (true) {
 

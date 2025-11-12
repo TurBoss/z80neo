@@ -21,6 +21,6 @@ pico_sdk_init()
 
 include(example_auto_set_url.cmake)
 
-add_subdirectory(turboram)
+add_subdirectory(z80neo)
 
 

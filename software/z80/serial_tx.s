@@ -1,19 +1,28 @@
 ;-- UART. Ejemplo 03: Prueba de envio de una cadena al PC por el puerto serie
 
+
+
 ;---- PUERTOS
 LEDS:  equ 0x10
-SERIAL_DATA: equ 0x40
+
+SERIAL_DATA: equ 0x80
+
 SERIAL_STATUS: equ 0x11
+
+
 
 ;--- Comienzo del programa
   org 0x0000
-  main:
+
+
+main:
 
   ;-- Configurar la pila
   ld sp, topOfStack
 
   ;-- HL apunta a la cadena a enviar
   ld HL, MSG
+
 
 loop:
 
@@ -41,11 +50,15 @@ loop:
   ;-- Repetir
   jr loop
 
+
 fin:
   halt
 
+
 ;--- Cadena a enviar. Deber terminar en 0
 MSG: DB "Hello World from z80neo !!!",0
+
+
 
 
   ;org 0x3fff
