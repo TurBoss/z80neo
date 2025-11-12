@@ -45,7 +45,7 @@ Join live chat
 
 - IRC
 
-	todo
+	#z80neo at libera chat
 
 
 
@@ -59,7 +59,7 @@ Schematics
 Software
 ========
 
-- z88dk-asm
+- z88dk-z80asm
 
 	https://github.com/z88dk/z88dk/
 
