@@ -41,11 +41,11 @@ Join live chat
 
 - discord
 
-	todo
+	https://discord.gg/TQudWKCKCQ
 
 - IRC
 
-	#z80neo at libera chat
+	https://web.libera.chat/ #z80neo
 
 
 
