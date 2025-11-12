@@ -1,3 +1,6 @@
 [submodule "src/turboram/libs/pico_fatfs"]
 	path = src/turboram/libs/pico_fatfs
 	url = https://github.com/TurBoss/pico_fatfs
+[submodule "firmware/z80neo/libs/pico_fatfs"]
+	path = firmware/z80neo/libs/pico_fatfs
+	url = https://github.com/TurBoss/pico_fatfs
