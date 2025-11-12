@@ -1,8 +1,10 @@
-src/.clangd
-src/.cproject
-src/.project
-src/.clang-format
-src/build/
-src/turboram/build/
+firmware/.clangd
+firmware/.cproject
+firmware/.project
+firmware/.clang-format
+firmware/build/
+firmware/z80neo/build/
 .project
-src/turboram/.cproject
+.clang-format
+.clangd
+.cproject
