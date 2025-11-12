@@ -8,3 +8,5 @@ firmware/z80neo/build/
 .clang-format
 .clangd
 .cproject
+*.hex
+*.bin

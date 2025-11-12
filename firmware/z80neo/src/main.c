@@ -37,15 +37,18 @@
 #define SERIAL_PORT 0x80
 
 // Buffer for received data
-#define BUFFER_SIZE 256
+uint8_t rx_buffer[CFG_TUD_CDC_RX_BUFSIZE];
+uint8_t tx_buffer[CFG_TUD_CDC_TX_BUFSIZE];
+uint8_t rx_head = 0;
+uint8_t rx_tail = 0;
+bool rx_data_available = false;
 
-static char rx_buffer[BUFFER_SIZE];
-static int buffer_index = 0;
+uint8_t read_buffer[256];
+
 
 // PWM CLK slice
 uint slice;
 
-uint8_t sbuf[CFG_TUD_CDC_RX_BUFSIZE];
 
 
 bool spi_configured;
@@ -1745,8 +1748,6 @@ uint8_t r_delay = 3;
 uint8_t rd_delay = 3;
 uint8_t w_delay = 3;
 
-char serial_buf[64];
-
 void bus_callback(uint pin, uint32_t events) {
 
 
@@ -1819,15 +1820,17 @@ void bus_callback(uint pin, uint32_t events) {
 			r_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
 
 
-
-			if (m_adr == SERIAL_PORT){
+			if (low_adr == SERIAL_PORT){
 				
 				// printf("%c", r_op);
 				
-				sprintf(serial_buf, "%c\0", r_op);
-				
-				tud_cdc_n_write(0, serial_buf, 1);
-		        tud_cdc_n_write_flush(0);
+				if (r_op != 0) {
+					
+					sprintf(tx_buffer, "%c", r_op);
+					
+					tud_cdc_n_write(0, tx_buffer, 1);
+			        tud_cdc_n_write_flush(0);
+				}
 		        
 			}
 			else{
@@ -1933,7 +1936,7 @@ void bus_callback(uint pin, uint32_t events) {
 				
 				m_adr = low_adr | high_adr;
 				
-				
+			
 		
 				// DIRECTION 3 DATA
 				gpio_put(DIR1_OUT, 1);
@@ -1944,18 +1947,49 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL1_OUT, 1);
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 0);
+					
+				if (m_adr == SERIAL_PORT) {
+					
+				    // Z80 is reading from serial port
+				    
+		        	printf("DATA ON: %x \n", rx_data_available);
+		        	
+				    w_op = 0;
+				    
+				    if (rx_data_available) {
+						
+				        w_op = rx_buffer[rx_head];
+					
+					
+					    set_bus_dir(1);
+					    
+					    gpio_set_dir_masked(bus_mask, bus_mask);
+					    gpio_put_masked(bus_mask, (w_op << BUS_GPIO_START));
+					    
+					    
+				        rx_head++;
+				        
+				        if (rx_head >= CFG_TUD_CDC_RX_BUFSIZE) rx_head = 0;
+				        if (rx_head == rx_tail) rx_data_available = false;
+				        
+				    }
+				    
+				}
+				else{
+				
+					
+					w_op = ram[cur_bank][m_adr];
+					
 			
-				
-				w_op = ram[cur_bank][m_adr];
-				
-		
-				set_bus_dir(1);
-				
-				gpio_set_dir_masked(bus_mask, bus_mask);
-		
-				gpio_put_masked(bus_mask, (w_op << BUS_GPIO_START));
-
-
+					set_bus_dir(1);
+					
+					gpio_set_dir_masked(bus_mask, bus_mask);
+					gpio_put_masked(bus_mask, (w_op << BUS_GPIO_START));
+	
+	
+					
+				}
+					
 				sleep_ms(w_delay);
 				
 				// DIRECTION OFF
@@ -2005,22 +2039,21 @@ void tud_cdc_rx_cb(uint8_t itf)
 
 
     // printf("RX CDC %d\n", itf);
-
-
-
-    // read the available data 
+	
+	// read the available data 
     // | IMPORTANT: also do this for CDC0 because otherwise
     // | you won't be able to print anymore to CDC0
     // | next time this function is called
-    uint32_t count = tud_cdc_n_read(itf, sbuf, sizeof(sbuf));
+    uint32_t count = tud_cdc_n_read(itf, rx_buffer, sizeof(rx_buffer));
 
     // check if the data was received on the second cdc interface
     
     if (itf == 1) {
         // process the received data
-        sbuf[count] = 0; // null-terminate the string
+        rx_buffer[count] = 0; // null-terminate the string
+        
         // now echo data back to the console on CDC 0
-        printf("RX1: %s\n", sbuf);
+        printf("RX1: %s\n", rx_buffer);
 
         // and echo back OK on CDC 1
         // tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
@@ -2028,15 +2061,13 @@ void tud_cdc_rx_cb(uint8_t itf)
     }
     
     else {
-        // process the received data
-        sbuf[count] = 0; // null-terminate the string
+        rx_buffer[count] = 0;
         
-        // now echo data back to the console on CDC 0
-        printf("RX0: %s\n", sbuf);
+        for (int i = 0; i < count; i++) {
+			printf("%c", rx_buffer[i]);
+		}
 
-        // and echo back OK on CDC 1
-//        tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
-//        tud_cdc_n_write_flush(itf);
+        rx_data_available = true;
 	}
 }
 
@@ -2372,209 +2403,5 @@ int main() {
 		// custom tasks
 		custom_cdc_task();
 
-		// ADDRESS
-
-		//		do {  // 135 ns (11000.... high clock!)
-
-		//		if (!gpio_get(MREQ_INPUT)) {
-		//
-		//			previous_ce = true;
-		//
-		//			gpio_put(SEL2_OUT, 1);
-		//			gpio_put(SEL1_OUT, 0);
-		//
-		//
-		//			sleep_ms(40);
-		//
-		//			low_adr = (((gpio_get_all() & addr_mask) >> BUS_GPIO_START )
-		//& 0b11111111);  // A0 - A7
-		//
-		//			sleep_ms(40);
-		//
-		//			gpio_put(SEL1_OUT, 1);
-		//			gpio_put(SEL2_OUT, 1);
-		//
-		//			sleep_ms(40);
-		//
-		//			gpio_put(SEL1_OUT, 1);
-		//			gpio_put(SEL2_OUT, 0);
-		//
-		//			sleep_ms(40);
-		//
-		//			high_adr = (((gpio_get_all() & addr_mask) >> BUS_GPIO_START
-		//) & 0b11111111) << 8;  // A8 - A15
-		////			high_adr =  0x00;
-		//
-		//			sleep_ms(40);
-		//
-		//			gpio_put(SEL2_OUT, 1);
-		//			gpio_put(SEL1_OUT, 1);
-		//
-		//
-		////			m_adr = 0x00;
-		// 			m_adr = low_adr | high_adr;
-		//
-		//
-		//
-		//			sleep_ms(40);
-		////
-		////////
-		//		}
-		//
-		//		// WRTITE DATA TO RAM
-		//
-		//		if (gpio_get(RD_INPUT)) {
-		//
-		//			gpio_put(SEL3_OUT, 0);
-		//			gpio_put(RW_OUT, 0);
-		//			gpio_set_dir_masked(data_mask, 0);
-		//
-		//
-		//			sleep_ms(40);
-		//
-		//			// wait until address is stable! ~80 ns or so...
-		//			// __asm volatile (" nop\n nop\n nop\n nop\n nop\n nop\n
-		// nop\n nop\n nop\n nop\n nop\n nop\n nop\n");
-		//
-		//			r_op = (gpio_get_all() & data_mask) >> BUS_GPIO_END;
-		//
-		//			ram[cur_bank][m_adr] = r_op;
-		//
-		//			read = true;
-		//
-		//			sleep_ms(40);
-		//
-		//			gpio_put(RW_OUT, 1);
-		//			gpio_put(SEL3_OUT, 1);
-		//
-		//
-		//		}
-		//
-		//
-		//		// READ DATA FROM RAM
-		//		if (gpio_get(WR_INPUT)) {
-		//
-		//			gpio_put(SEL3_OUT, 0);
-		//			gpio_put(RW_OUT, 1);
-		//
-		//			sleep_ms(40);
-		//
-		//			w_op = ram[cur_bank][m_adr];
-		//
-		//			gpio_set_dir_masked(data_mask, data_mask);
-		//			gpio_put_masked(data_mask, (w_op << BUS_GPIO_END));
-		//
-		//			written = true;
-		//
-		//			sleep_ms(40);
-		//
-		//			gpio_put(RW_OUT, 0);
-		//			gpio_put(SEL3_OUT, 1);
-		//
-		//
-		//
-		//		}
-		//
-		//
-		//
-		//
-		//
-		//
-		//
-		//
-		////////
-		////
-		//
-		//
-		//
-		//
-		//
-		//
-		//
-		///*		}
-		//		else if (! gpio_get(WR_INPUT) ) {
-		//			previous_ce = false;
-		//		}
-		//		//} while (!gpio_get(MREQ_INPUT) && ! disabled );
-		//*/
-		////		}
-		//
-		//
-		//		//
-		//		//
-		//		//
-		//
-		//
-		//		// DATA
-		//
-		//
-		//
-		////		read = false;
-		//// 		written = false;
-		//
-		////		if ( !gpio_get(WR_INPUT) && ! gpio_get(RD_INPUT) && ! read
-		///&& ! written && ! disabled ) {
-		//
-		//		// READ DATA
-		///*
-		//		while (!gpio_get(MREQ_INPUT) && ! disabled) {
-		//
-		//
-		//			if (!gpio_get(RD_INPUT) && ! gpio_get(WR_INPUT) ) {
-		//
-		//				gpio_put(SEL3_OUT, 0);
-		//				gpio_put(RW_OUT, 1);
-		//				gpio_set_dir_masked(data_mask, 0);
-		//
-		//
-		//				sleep_ms(0);
-		//
-		//				// wait until address is stable! ~80 ns or so...
-		//				// __asm volatile (" nop\n nop\n nop\n nop\n nop\n nop\n
-		// nop\n nop\n nop\n nop\n nop\n nop\n nop\n");
-		//
-		//				r_op = (gpio_get_all() & data_mask) >> BUS_GPIO_START ;
-		//
-		//				ram[cur_bank][m_adr] = r_op;
-		//
-		//				read = true;
-		//
-		//				sleep_ms(0);
-		//
-		//				gpio_put(RW_OUT, 0);
-		//				gpio_put(SEL3_OUT, 1);
-		//
-		//
-		//			}
-		//
-		//
-		//			// WRITTE DATA
-		//			if ( gpio_get(RD_INPUT) && ! gpio_get(WR_INPUT) ) {
-		//
-		//				gpio_put(SEL3_OUT, 0);
-		//				gpio_put(RW_OUT, 0);
-		//
-		//				sleep_ms(0);
-		//
-		//				w_op = ram[cur_bank][m_adr];
-		//
-		//				gpio_set_dir_masked(data_mask, data_mask);
-		//				gpio_put_masked(data_mask, (w_op << BUS_GPIO_START));
-		//
-		//				written = true;
-		//
-		//				sleep_ms(0);
-		//
-		//				gpio_put(RW_OUT, 1);
-		//				gpio_put(SEL3_OUT, 1);
-		//
-		//
-		//
-		//			}
-		//
-		// 		}
-		//*/
-		//
-		//		gpio_set_dir_masked(data_mask, 0);
 	}
 }
