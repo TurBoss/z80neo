@@ -1765,9 +1765,9 @@ bool iorq = true;
 bool wr = true;
 
 
-uint8_t r_delay = 1;
+uint8_t r_delay = 880;
 uint8_t rd_delay = 1;
-uint16_t w_delay = 800;
+uint16_t w_delay = 880;
 
 void bus_callback(uint pin, uint32_t events) {
 
@@ -1786,7 +1786,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL2_OUT, 1);
 		gpio_put(SEL3_OUT, 1);
 
-		sleep_ms(r_delay);
+		sleep_us(r_delay);
 		
 		set_bus_dir(0);
 		
@@ -1803,7 +1803,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL2_OUT, 0);
 		gpio_put(SEL3_OUT, 1);
 
-		sleep_ms(r_delay);
+		sleep_us(r_delay);
 		
 		set_bus_dir(0);
 		
@@ -1834,7 +1834,7 @@ void bus_callback(uint pin, uint32_t events) {
 		
 		    gpio_set_dir_masked(bus_mask, bus_mask);
 		    
-			sleep_ms(w_delay);
+			sleep_us(w_delay);
 		
 		
 			set_bus_dir(0);
@@ -1894,9 +1894,7 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 	
-			// sleep_ms(w_delay);
 			sleep_us(w_delay);
-			// nop_delay();
 		
 			set_bus_dir(0);
 		
@@ -1933,9 +1931,7 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL2_OUT, 0);
 				gpio_put(SEL3_OUT, 1);
 				
-				// sleep_ms(w_delay);
 				sleep_us(w_delay);
-				// nop_delay();
 				
 		
 				set_bus_dir(0);
@@ -2012,10 +2008,8 @@ void bus_callback(uint pin, uint32_t events) {
 	
 					
 				}
-					
-				// sleep_ms(w_delay);
+				
 				sleep_us(w_delay);
-				// nop_delay();
 				
 				// DIRECTION OFF
 				gpio_put(DIR1_OUT, 1);
