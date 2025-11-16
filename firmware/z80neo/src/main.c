@@ -10,15 +10,16 @@
 #include <tusb.h>
 
 // Pico2
+#include <pico/multicore.h>
+#include <pico/stdlib.h>
+#include <pico/time.h>
+
 #include <hardware/adc.h>
 #include <hardware/clocks.h>
 #include <hardware/gpio.h>
 #include <hardware/pwm.h>
 #include <hardware/spi.h>
 #include <hardware/vreg.h>
-#include <pico/multicore.h>
-#include <pico/stdlib.h>
-#include <pico/time.h>
 
 // Screen
 #include "ssd1306_i2c.h"
@@ -36,18 +37,29 @@
 
 #define SERIAL_PORT 0x80
 
+
+
+#define PWM_WRAP 65535    // 16-bit resolution
+
+volatile int duty_cycle = PWM_WRAP * 0.5;  // Start at 10% duty cycle as said in manual
+
+// PWM CLK slice
+uint slice;
+
+
+
 // Buffer for received data
 uint8_t rx_buffer[CFG_TUD_CDC_RX_BUFSIZE];
 uint8_t tx_buffer[CFG_TUD_CDC_TX_BUFSIZE];
+
 uint8_t rx_head = 0;
 uint8_t rx_tail = 0;
+
 bool rx_data_available = false;
 
 uint8_t read_buffer[256];
 
 
-// PWM CLK slice
-uint slice;
 
 
 
@@ -253,12 +265,12 @@ volatile bool confirmed = false;
 uint8_t bus_mask = 0;
 uint32_t gpio = 0;
 
-uint8_t low_adr = 0;
-uint16_t high_adr = 0;
+uint8_t low_adr = 0x00;
+uint16_t high_adr = 0x00;
 
-uint16_t m_adr = 0;
-uint8_t r_op = 0;
-uint8_t w_op = 0;
+uint16_t m_adr = 0x00;
+uint8_t r_op = 0x00;
+uint8_t w_op = 0x00;
 
 uint32_t d_adr = 0;
 uint32_t dr_op = 0;
@@ -1730,11 +1742,20 @@ void set_bus_dir(int direction) {
 //
 
 
-/*
-void nop_delay(){
-	 __asm volatile (" nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n");
-	 }
-*/
+void nop_delay() {
+
+	asm volatile (" nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
+				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
+				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
+				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
+				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
+				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
+				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
+				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
+                  nop\n nop\n nop\n nop\n nop\n");
+
+}
+
 
 
 bool mreq = true;
@@ -1744,9 +1765,9 @@ bool iorq = true;
 bool wr = true;
 
 
-uint8_t r_delay = 3;
-uint8_t rd_delay = 3;
-uint8_t w_delay = 3;
+uint8_t r_delay = 1;
+uint8_t rd_delay = 1;
+uint16_t w_delay = 800;
 
 void bus_callback(uint pin, uint32_t events) {
 
@@ -1758,6 +1779,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(DIR1_OUT, 0);
 		gpio_put(DIR2_OUT, 1);
 		gpio_put(DIR3_OUT, 1);
+
 
 		// SELECT 1 ON LOW ADDRESS
 		gpio_put(SEL1_OUT, 0);
@@ -1824,13 +1846,10 @@ void bus_callback(uint pin, uint32_t events) {
 				
 				// printf("%c", r_op);
 				
-				if (r_op != 0) {
-					
-					sprintf(tx_buffer, "%c", r_op);
-					
-					tud_cdc_n_write(0, tx_buffer, 1);
-			        tud_cdc_n_write_flush(0);
-				}
+				sprintf(tx_buffer, "%c", r_op);
+				
+				tud_cdc_n_write(0, tx_buffer, 1);
+		        tud_cdc_n_write_flush(0);
 		        
 			}
 			else{
@@ -1875,8 +1894,9 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 	
-			sleep_ms(w_delay);
-	
+			// sleep_ms(w_delay);
+			sleep_us(w_delay);
+			// nop_delay();
 		
 			set_bus_dir(0);
 		
@@ -1913,7 +1933,9 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL2_OUT, 0);
 				gpio_put(SEL3_OUT, 1);
 				
-				sleep_ms(w_delay);
+				// sleep_ms(w_delay);
+				sleep_us(w_delay);
+				// nop_delay();
 				
 		
 				set_bus_dir(0);
@@ -1947,12 +1969,13 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL1_OUT, 1);
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 0);
-					
-				if (m_adr == SERIAL_PORT) {
+				
+
+				if (low_adr == SERIAL_PORT) {
 					
 				    // Z80 is reading from serial port
 				    
-		        	printf("DATA ON: %x \n", rx_data_available);
+		        	printf("GOT DATA: %s \n", rx_buffer);
 		        	
 				    w_op = 0;
 				    
@@ -1990,7 +2013,9 @@ void bus_callback(uint pin, uint32_t events) {
 					
 				}
 					
-				sleep_ms(w_delay);
+				// sleep_ms(w_delay);
+				sleep_us(w_delay);
+				// nop_delay();
 				
 				// DIRECTION OFF
 				gpio_put(DIR1_OUT, 1);
@@ -2033,7 +2058,7 @@ void custom_cdc_task(void)
 // callback when data is received on a CDC interface
 void tud_cdc_rx_cb(uint8_t itf)
 {
-	
+	// rx_head = 0;
     // allocate buffer for the data in the stack
     
 
@@ -2053,7 +2078,7 @@ void tud_cdc_rx_cb(uint8_t itf)
         rx_buffer[count] = 0; // null-terminate the string
         
         // now echo data back to the console on CDC 0
-        printf("RX1: %s\n", rx_buffer);
+        // printf("RX1: %s\n", rx_buffer);
 
         // and echo back OK on CDC 1
         // tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
@@ -2062,60 +2087,14 @@ void tud_cdc_rx_cb(uint8_t itf)
     
     else {
         rx_buffer[count] = 0;
-        
-        for (int i = 0; i < count; i++) {
-			printf("%c", rx_buffer[i]);
-		}
+
+		// printf("RX0: %s\n", rx_buffer);
 
         rx_data_available = true;
 	}
 }
 
 
-
-
-
-
-
-
-
-
-uint pwm_set_freq_duty(uint gpio, uint32_t freq, float duty_cycle) {
-	
-	// ============================================================
-
-	// Tell GPIO 0 it is allocated to the PWM
-	gpio_set_function(gpio, GPIO_FUNC_PWM);
-
-	// Find out which PWM slice is connected to GPIO 0 (it's slice 0)
-	uint slice_num = pwm_gpio_to_slice_num(gpio);
-
-	// Set the PWM frequency to 50 Hz
-	// The system clock is typically 125 MHz, so we need to divide it down
-	// 125,000,000 Hz / 50 Hz = 2,500,000
-	// We need to set the wrap value to 2,500,000 / 4096 (max duty cycle
-	// resolution)
-	// uint32_t clock_div = 2500000 / 4096; // 50hz
-	
-	uint32_t clock_div = (clock_get_hz(clk_sys)/50) / 4096;
-	
-	pwm_set_clkdiv(slice_num, clock_div);
-
-	// Set period of 4096 cycles (for 12-bit resolution)
-	pwm_set_wrap(slice_num, 4095);
-
-	// Set the duty cycle
-	pwm_set_chan_level(slice_num, PWM_CHAN_A, 2049); // between 0 and 4096
-
-	// ============================================================
-	return slice_num;
-    
-}
-
-void enable_clk(uint slice_num, bool enable){
-
-    pwm_set_enabled(slice_num, enable);
-}
 
 
 
@@ -2128,33 +2107,32 @@ bool previous_we = false;
 
 
 int main() {
-
-	// Set system clock speed.
-	// 125 MHz
-
-	// set_sys_clock_pll(1100000000, 4, 1);
-
-	//
-	//
-	//
 	
-	
+
 	// USB
     board_init();
     tusb_init();
+
 
     // TinyUSB board init callback after init
     if (board_init_after_tusb) {
         board_init_after_tusb();
     }
     
+
 	stdio_init_all();
 
-	sleep_ms(100);
 
+	// Configure GPIO PIN for PWM
+	gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PWM);
+	uint slice_num = pwm_gpio_to_slice_num(GPIO_PWM_SIG);
+	uint channel_num = pwm_gpio_to_channel(GPIO_PWM_SIG);
 
-	slice = pwm_set_freq_duty(GPIO_PWM_SIG, 50, 50.0f);
-	
+	//configure pwm 
+	pwm_config config = pwm_get_default_config();
+	pwm_config_set_clkdiv(&config, 4.0);
+	pwm_config_set_wrap(&config, PWM_WRAP);
+	pwm_init(slice_num, &config, true);	
 
 
 	pico_fatfs_spi_config_t fs_config = {
@@ -2373,7 +2351,7 @@ int main() {
 	gpio_put(SEL2_OUT, 1);
 	gpio_put(SEL3_OUT, 1);
 
-	reset_release();
+	// reset_release();
 
 	// gpio_set_irq_enabled_with_callback(21, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
 	
@@ -2383,12 +2361,11 @@ int main() {
 	//	gpio_set_irq_enabled(RD_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 	// 	gpio_set_irq_enabled(WR_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 
-
-
 	// Enable CPU clock	
-	enable_clk(slice, true);
-	
-	
+
+	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
+
+
 	while (true) {
 
 		if (disabled) {
