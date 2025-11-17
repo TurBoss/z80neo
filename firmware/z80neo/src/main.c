@@ -1760,8 +1760,7 @@ bool wr = true;
 
 // 150 Mhz half work cycle 88 ns
 
-uint16_t r_delay = 880;
-uint16_t w_delay = 880;
+uint16_t instruction_delay = 833;
 
 void bus_callback(uint pin, uint32_t events) {
 
@@ -1780,7 +1779,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL2_OUT, 1);
 		gpio_put(SEL3_OUT, 1);
 
-		sleep_us(w_delay);
+		sleep_us(instruction_delay);
 		
 		set_bus_dir(0);
 		
@@ -1797,7 +1796,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL2_OUT, 0);
 		gpio_put(SEL3_OUT, 1);
 
-		sleep_us(w_delay);
+		sleep_us(instruction_delay);
 		
 		set_bus_dir(0);
 		
@@ -1828,7 +1827,7 @@ void bus_callback(uint pin, uint32_t events) {
 		
 		    gpio_set_dir_masked(bus_mask, bus_mask);
 		    
-			sleep_us(w_delay);
+			sleep_us(instruction_delay);
 		
 		
 			set_bus_dir(0);
@@ -1888,7 +1887,7 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 	
-			sleep_us(r_delay);
+			sleep_us(instruction_delay);
 		
 			set_bus_dir(0);
 		
@@ -1925,7 +1924,7 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL2_OUT, 0);
 				gpio_put(SEL3_OUT, 1);
 				
-				sleep_us(r_delay);
+				sleep_us(instruction_delay);
 				
 		
 				set_bus_dir(0);
@@ -2003,7 +2002,7 @@ void bus_callback(uint pin, uint32_t events) {
 					
 				}
 				
-				sleep_us(r_delay);
+				sleep_us(instruction_delay);
 
 				
 				// DIRECTION OFF
@@ -2123,7 +2122,7 @@ int main() {
 	// Target a reasonable wrap value for good resolution
 	uint32_t target_wrap = PWM_WRAP;
 
-	float frequency_hz = 100.0f;
+	float frequency_hz = 200.0f;
 
 	float system_clock = clock_get_hz(clk_sys);
 

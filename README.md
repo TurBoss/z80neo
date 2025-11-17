@@ -88,14 +88,19 @@ topOfStack
 pictures
 ========
 
+the thing
 ![z80neo full thing](https://github.com/turboss/z80neo/blob/main/images/full_thing.jpg?raw=true)
 
+back wiring
 ![z80neo cpu wires](https://github.com/turboss/z80neo/blob/main/images/cpu_back.jpg?raw=true)
 
+pulse view capture
 ![z80neo pulseview](https://github.com/turboss/z80neo/blob/main/images/pulse_view.png?raw=true)
 
+screen
 ![z80neo screen](https://github.com/turboss/z80neo/blob/main/images/screen.png?raw=true)
 
+serial out
 ![z80neo serial](https://github.com/turboss/z80neo/blob/main/images/serial_out.png?raw=true)
 
 
@@ -111,3 +116,12 @@ Referemces
 - neo6502 
 
 	https://github.com/OLIMEX/Neo6502
+	
+	
+Licensee
+========
+
+
+* Hardware is released under CERN Open Hardware Licence Version 2 - Strongly Reciprocal
+* Software is released under GPL V3 Licensee
+* Documentation is released under CC BY-SA 4.0
