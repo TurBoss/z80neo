@@ -4,8 +4,8 @@
 ;-- ASCII en los LEDs
 
 ;---- PUERTOS
-LEDS:			equ	40H
-SERIAL_DATA:	equ	80H
+LEDS:			equ	0x10
+SERIAL_DATA:	equ	0x80
 
 ;--- Comienzo del programa
 org 0x0000

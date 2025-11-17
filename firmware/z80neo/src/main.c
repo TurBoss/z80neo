@@ -41,7 +41,12 @@
 
 #define PWM_WRAP 65535    // 16-bit resolution
 
-volatile int duty_cycle = PWM_WRAP * 0.5;  // Start at 10% duty cycle as said in manual
+
+
+
+#define INST_DELAY 50
+
+
 
 // PWM CLK slice
 uint slice;
@@ -128,7 +133,7 @@ void save();
 //
 //
 
-#define VERSION "  v0.2 - alpha  "
+#define VERSION "  v0.3 - alpha  "
 
 //
 // ADC Configuration (MPF.INI file!)
@@ -1758,15 +1763,11 @@ bool rd = true;
 bool wr = true;
 
 
-// 150 Mhz half work cycle 88 ns
-
-uint16_t instruction_delay = 833;
 
 void bus_callback(uint pin, uint32_t events) {
 
 
 	if (pin == IORQ_INPUT) {
-
 
 		// DIRECTION 1 ON LOW ADDRESS
 		gpio_put(DIR1_OUT, 0);
@@ -1779,7 +1780,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL2_OUT, 1);
 		gpio_put(SEL3_OUT, 1);
 
-		sleep_us(instruction_delay);
+		sleep_us(INST_DELAY);
 		
 		set_bus_dir(0);
 		
@@ -1796,7 +1797,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL2_OUT, 0);
 		gpio_put(SEL3_OUT, 1);
 
-		sleep_us(instruction_delay);
+		sleep_us(INST_DELAY);
 		
 		set_bus_dir(0);
 		
@@ -1827,7 +1828,7 @@ void bus_callback(uint pin, uint32_t events) {
 		
 		    gpio_set_dir_masked(bus_mask, bus_mask);
 		    
-			sleep_us(instruction_delay);
+			sleep_us(INST_DELAY);
 		
 		
 			set_bus_dir(0);
@@ -1870,11 +1871,10 @@ void bus_callback(uint pin, uint32_t events) {
 
 	else if (pin == MREQ_INPUT) {
 
-		mreq = gpio_get(MREQ_INPUT);
 		rd = gpio_get(RD_INPUT);
 		
 		// MEMORY READ
-		if (!mreq && !rd) {
+		if (!rd) {
 
 
 			// DIRECTION 1 ON LOW ADDRESS
@@ -1887,7 +1887,7 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 	
-			sleep_us(instruction_delay);
+			sleep_us(INST_DELAY);
 		
 			set_bus_dir(0);
 		
@@ -1906,13 +1906,11 @@ void bus_callback(uint pin, uint32_t events) {
 
 			gpio_set_dir_masked(bus_mask, 0);
 			
-			
-			mreq = gpio_get(MREQ_INPUT);
 			rd = gpio_get(RD_INPUT);
 	
 			// Check if NOT RD and NOT MREQ
 			
-			if (!mreq && !rd) {
+			if (!rd) {
 			
 				// DIRECTION 2 ON HIGH ADDRESS
 				gpio_put(DIR1_OUT, 1);
@@ -1924,7 +1922,7 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL2_OUT, 0);
 				gpio_put(SEL3_OUT, 1);
 				
-				sleep_us(instruction_delay);
+				sleep_us(INST_DELAY); 
 				
 		
 				set_bus_dir(0);
@@ -2002,7 +2000,7 @@ void bus_callback(uint pin, uint32_t events) {
 					
 				}
 				
-				sleep_us(instruction_delay);
+				sleep_us(INST_DELAY);
 
 				
 				// DIRECTION OFF
@@ -2095,7 +2093,10 @@ bool previous_we = false;
 
 
 int main() {
-	
+
+//	vreg_set_voltage(VREG_VOLTAGE_1_30);
+//	sleep_ms(1);
+//	set_sys_clock_khz(150 * KHZ, true);
 
 	// USB
     board_init();
@@ -2121,10 +2122,10 @@ int main() {
 
 	// Target a reasonable wrap value for good resolution
 	uint32_t target_wrap = PWM_WRAP;
-
-	float frequency_hz = 200.0f;
+	float frequency_hz = 8000.0f;  // 8 Khz
 
 	float system_clock = clock_get_hz(clk_sys);
+
 
 	// Calculate required clock divider
 	float clock_divider = system_clock / (frequency_hz * (target_wrap + 1));
@@ -2141,12 +2142,13 @@ int main() {
 	    if (target_wrap > 65535) target_wrap = 65535;
 	}
 
+	int duty_cycle = target_wrap * 0.5;  // Start at 10% duty cycle as said in manual
 
 	//configure pwm 
 	pwm_config config = pwm_get_default_config();
 	// pwm_config_set_clkdiv(&config, 64.0f);
 	pwm_config_set_clkdiv(&config, clock_divider);
-	pwm_config_set_wrap(&config, PWM_WRAP);
+	pwm_config_set_wrap(&config, target_wrap);
 	pwm_init(slice_num, &config, true);	
 
 	// Enable CPU clock	

@@ -1,5 +1,4 @@
-z80neo
-======
+# z80neo
 
 
 ![z80neo logo](https://github.com/turboss/z80neo/blob/main/images/logo_mon.png?raw=true)
@@ -49,15 +48,14 @@ Join live chat
 
 
 
-Schematics
-==========
+## Schematics
 
 
 ![z80neo schematics](https://github.com/turboss/z80neo/blob/main/images/z80neo.png?raw=true)
 
 
-Software
-========
+## Software
+
 
 - z88dk-z80asm
 
@@ -85,8 +83,7 @@ topOfStack
 ```
 
 
-pictures
-========
+## pictures
 
 the thing
 ![z80neo full thing](https://github.com/turboss/z80neo/blob/main/images/full_thing.jpg?raw=true)
@@ -105,8 +102,7 @@ serial out
 
 
 
-Referemces
-==========
+## Referemces
 
 
 - picoram6116
@@ -118,8 +114,7 @@ Referemces
 	https://github.com/OLIMEX/Neo6502
 	
 	
-Licensee
-========
+## Licensee
 
 
 * Hardware is released under CERN Open Hardware Licence Version 2 - Strongly Reciprocal

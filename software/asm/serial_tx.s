@@ -56,7 +56,7 @@ fin:
 
 
 ;--- Cadena a enviar. Deber terminar en 0
-MSG: DB "Hello World from z80neo !!!",0
+MSG: DB "Hello World from z80neo !!!\r\n", 0
 
 
 
