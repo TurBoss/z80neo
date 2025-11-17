@@ -44,7 +44,7 @@
 
 
 
-#define INST_DELAY 50
+#define INST_DELAY 60
 
 
 
@@ -1414,6 +1414,7 @@ void load_file(bool quiet) {
 	//
 
 	fr = f_close(&fil);
+
 	if (fr != FR_OK) {
 		show_error(0, 0, "Cant't close file!");
 	}
@@ -1961,12 +1962,13 @@ void bus_callback(uint pin, uint32_t events) {
 				if (low_adr == SERIAL_PORT) {
 					
 				    // Z80 is reading from serial port
-				    
-		        	printf("GOT DATA: %s \n", rx_buffer);
 		        	
 				    w_op = 0;
 				    
 				    if (rx_data_available) {
+
+
+						printf("GOT DATA: %s \n", rx_buffer);
 						
 				        w_op = rx_buffer[rx_head];
 					
@@ -2021,6 +2023,8 @@ void bus_callback(uint pin, uint32_t events) {
 	}
 }
 
+
+
 //
 //
 //
@@ -2072,6 +2076,7 @@ void tud_cdc_rx_cb(uint8_t itf)
     }
     
     else {
+
         rx_buffer[count] = 0;
 
 		// printf("RX0: %s\n", rx_buffer);
@@ -2094,9 +2099,9 @@ bool previous_we = false;
 
 int main() {
 
-//	vreg_set_voltage(VREG_VOLTAGE_1_30);
-//	sleep_ms(1);
-//	set_sys_clock_khz(150 * KHZ, true);
+	vreg_set_voltage(VREG_VOLTAGE_1_30);
+	sleep_ms(1);
+	set_sys_clock_khz(300 * KHZ, true);
 
 	// USB
     board_init();
@@ -2122,6 +2127,7 @@ int main() {
 
 	// Target a reasonable wrap value for good resolution
 	uint32_t target_wrap = PWM_WRAP;
+
 	float frequency_hz = 8000.0f;  // 8 Khz
 
 	float system_clock = clock_get_hz(clk_sys);
@@ -2142,7 +2148,7 @@ int main() {
 	    if (target_wrap > 65535) target_wrap = 65535;
 	}
 
-	int duty_cycle = target_wrap * 0.5;  // Start at 10% duty cycle as said in manual
+	int duty_cycle = target_wrap * 0.51;  // Start at 10% duty cycle as said in manual
 
 	//configure pwm 
 	pwm_config config = pwm_get_default_config();

@@ -18,14 +18,21 @@ target_include_directories(turboram PRIVATE
 # pull in common dependencies
 target_link_libraries(turboram
 	pico_stdlib
-	hardware_i2c
 	pico_multicore
+	pico_unique_id
+	hardware_gpio
+	hardware_i2c
 	hardware_adc
 	hardware_pwm
 	hardware_spi
 	hardware_pio
 	hardware_dma
-	pico_unique_id
+	hardware_irq
+	hardware_resets
+	hardware_pll
+	hardware_vreg
+	hardware_watchdog
+	hardware_xosc
 	tinyusb_device
 	tinyusb_board
 	pico_fatfs
