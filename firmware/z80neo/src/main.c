@@ -1744,29 +1744,23 @@ void set_bus_dir(int direction) {
 
 void nop_delay() {
 
-	asm volatile (" nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
-				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
-				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
-				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
-				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
-				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
-				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
-				  nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n nop\n \\
-                  nop\n nop\n nop\n nop\n nop\n");
+	// 125 mhz 3 nops 20 ns
+	asm volatile (" nop\n nop\n nop\n");
 
 }
 
 
 
 bool mreq = true;
-bool rd = true;
-
 bool iorq = true;
+
+bool rd = true;
 bool wr = true;
 
 
-uint8_t r_delay = 880;
-uint8_t rd_delay = 1;
+// 150 Mhz half work cycle 88 ns
+
+uint16_t r_delay = 880;
 uint16_t w_delay = 880;
 
 void bus_callback(uint pin, uint32_t events) {
@@ -1786,7 +1780,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL2_OUT, 1);
 		gpio_put(SEL3_OUT, 1);
 
-		sleep_us(r_delay);
+		sleep_us(w_delay);
 		
 		set_bus_dir(0);
 		
@@ -1803,7 +1797,7 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL2_OUT, 0);
 		gpio_put(SEL3_OUT, 1);
 
-		sleep_us(r_delay);
+		sleep_us(w_delay);
 		
 		set_bus_dir(0);
 		
@@ -1894,7 +1888,7 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 	
-			sleep_us(w_delay);
+			sleep_us(r_delay);
 		
 			set_bus_dir(0);
 		
@@ -1931,7 +1925,7 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL2_OUT, 0);
 				gpio_put(SEL3_OUT, 1);
 				
-				sleep_us(w_delay);
+				sleep_us(r_delay);
 				
 		
 				set_bus_dir(0);
@@ -2009,7 +2003,8 @@ void bus_callback(uint pin, uint32_t events) {
 					
 				}
 				
-				sleep_us(w_delay);
+				sleep_us(r_delay);
+
 				
 				// DIRECTION OFF
 				gpio_put(DIR1_OUT, 1);
@@ -2122,11 +2117,42 @@ int main() {
 	uint slice_num = pwm_gpio_to_slice_num(GPIO_PWM_SIG);
 	uint channel_num = pwm_gpio_to_channel(GPIO_PWM_SIG);
 
+
+	// calculate clock divider
+
+	// Target a reasonable wrap value for good resolution
+	uint32_t target_wrap = PWM_WRAP;
+
+	float frequency_hz = 100.0f;
+
+	float system_clock = clock_get_hz(clk_sys);
+
+	// Calculate required clock divider
+	float clock_divider = system_clock / (frequency_hz * (target_wrap + 1));
+
+	// Constrain divider to valid range (1-255)
+	if (clock_divider < 1.0f) {
+	    clock_divider = 1.0f;
+	    target_wrap = (uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
+	} else if (clock_divider > 255.0f) {
+	    clock_divider = 255.0f;
+	    target_wrap = (uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
+	    
+	    // Ensure wrap doesn't exceed maximum
+	    if (target_wrap > 65535) target_wrap = 65535;
+	}
+
+
 	//configure pwm 
 	pwm_config config = pwm_get_default_config();
-	pwm_config_set_clkdiv(&config, 4.0);
+	// pwm_config_set_clkdiv(&config, 64.0f);
+	pwm_config_set_clkdiv(&config, clock_divider);
 	pwm_config_set_wrap(&config, PWM_WRAP);
 	pwm_init(slice_num, &config, true);	
+
+	// Enable CPU clock	
+
+	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
 
 
 	pico_fatfs_spi_config_t fs_config = {
@@ -2355,10 +2381,6 @@ int main() {
 	//	gpio_set_irq_enabled(RD_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 	// 	gpio_set_irq_enabled(WR_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 
-	// Enable CPU clock	
-
-	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
-
 
 	while (true) {
 
@@ -2368,7 +2390,7 @@ int main() {
 			while (disabled) {
 			};
 		}
-		
+
 		tud_task();
 		
 		// custom tasks
