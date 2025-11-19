@@ -28,11 +28,12 @@
 #include "ff.h"
 #include "tf_card.h"
 
-#undef CLK_SLOW_DEFAULT
-#undef CLK_FAST_DEFAULT
 
-#define CLK_SLOW_DEFAULT (100 * KHZ)
-#define CLK_FAST_DEFAULT (10 * MHZ)
+//#undef CLK_SLOW_DEFAULT
+//#undef CLK_FAST_DEFAULT
+//
+//#define CLK_SLOW_DEFAULT (100 * KHZ)
+//#define CLK_FAST_DEFAULT (10 * MHZ)
 
 
 #define SERIAL_PORT 0x80
@@ -42,9 +43,7 @@
 #define PWM_WRAP 65535    // 16-bit resolution
 
 
-
-
-#define INST_DELAY 60
+#define INST_DELAY 50
 
 
 
@@ -274,8 +273,11 @@ uint8_t low_adr = 0x00;
 uint16_t high_adr = 0x00;
 
 uint16_t m_adr = 0x00;
-uint8_t r_op = 0x00;
-uint8_t w_op = 0x00;
+
+uint8_t io_r_op = 0x00;
+uint8_t io_w_op = 0x00;
+uint8_t mem_r_op = 0x00;
+uint8_t mem_w_op = 0x00;
 
 uint32_t d_adr = 0;
 uint32_t dr_op = 0;
@@ -574,13 +576,16 @@ void display_loop() {
 
 			render(buf, &frame_area);
 		}
+
 		if ((cur_disp_mode == OFF) & (tbmon == false)) {
 
 			print_string(0, 0, "L:%04x", low_adr);
 			print_string(0, 1, "H:%04x", high_adr);
-			print_string(0, 2, "&:%04x", m_adr);
-			print_string(0, 3, "R:%02x", r_op);
-			print_string(8, 3, "W:%02x", w_op);
+			print_string(0, 3, "&:%04x", m_adr);
+			print_string(10, 0, "MR: %02x", mem_r_op);
+			print_string(10, 1, "MW: %02x", mem_w_op);
+			print_string(10, 2, "IOR:%02x", io_r_op);
+			print_string(10, 3, "IOW:%02x", io_w_op);
 		}
 
 		//
@@ -1694,7 +1699,7 @@ void show_logo(void) {
 
 	clear_screen();
 
-	print_string(0, 0, "    TurBoRAM    ");
+	print_string(center_string("Z80NEO"), 0, "Z80NEO");
 	print_string(0, 1, VERSION);
 	print_string(center_string(MACHINE), 2, MACHINE);
 	print_string(0, 3, " TurBoss  2025 ");
@@ -1767,134 +1772,231 @@ bool wr = true;
 
 void bus_callback(uint pin, uint32_t events) {
 
+	//
+	// Device access
+	//
 
 	if (pin == IORQ_INPUT) {
 
-		// DIRECTION 1 ON LOW ADDRESS
-		gpio_put(DIR1_OUT, 0);
-		gpio_put(DIR2_OUT, 1);
-		gpio_put(DIR3_OUT, 1);
-
-
-		// SELECT 1 ON LOW ADDRESS
-		gpio_put(SEL1_OUT, 0);
-		gpio_put(SEL2_OUT, 1);
-		gpio_put(SEL3_OUT, 1);
-
-		sleep_us(INST_DELAY);
-		
-		set_bus_dir(0);
-		
-		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
-
-
-		// DIRECTION 2 ON HIGH ADDRESS
-		gpio_put(DIR1_OUT, 1);
-		gpio_put(DIR2_OUT, 0);
-		gpio_put(DIR3_OUT, 1);
-		
-		// SELECT 2 ON HIGH ADDRESS
-		gpio_put(SEL1_OUT, 1);
-		gpio_put(SEL2_OUT, 0);
-		gpio_put(SEL3_OUT, 1);
-
-		sleep_us(INST_DELAY);
-		
-		set_bus_dir(0);
-		
-		high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)	<< 8; // A8 - A15
-		// 	high_adr =  0x00;
-		
-		// m_adr = 0x00;
-		m_adr = low_adr | high_adr;
-		
-		wr = gpio_get(IORQ_INPUT);
-		
-
-		// MEMORY WRITE
-		if (!wr) {
-
-			// sleep_ms(0);
-			
-			// SLECT 3 DATA
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 0);
-
-			// DIRECTION 3 DATA
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 0);
-
-		
-		    gpio_set_dir_masked(bus_mask, bus_mask);
-		    
-			sleep_us(INST_DELAY);
-		
-		
-			set_bus_dir(0);
-			
-			r_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
-
-
-			if (low_adr == SERIAL_PORT){
-				
-				// printf("%c", r_op);
-				
-				sprintf(tx_buffer, "%c", r_op);
-				
-				tud_cdc_n_write(0, tx_buffer, 1);
-		        tud_cdc_n_write_flush(0);
-		        
-			}
-			else{
-				ram[cur_bank][m_adr] = r_op;
-			}
-			
-			gpio_set_dir_masked(bus_mask, 0);
-
-		}
-
-		
-		// DIRECTION OFF
-		gpio_put(DIR1_OUT, 1);
-		gpio_put(DIR2_OUT, 1);
-		gpio_put(DIR3_OUT, 1);
-		
-		// DIRECTION OFF
-		gpio_put(SEL1_OUT, 1);
-		gpio_put(SEL2_OUT, 1);
-		gpio_put(SEL3_OUT, 1);
-		
-			
-
-	}
-
-	else if (pin == MREQ_INPUT) {
-
 		rd = gpio_get(RD_INPUT);
-		
-		// MEMORY READ
-		if (!rd) {
-
-
-			// DIRECTION 1 ON LOW ADDRESS
+		wr = gpio_get(WR_INPUT);
+	
+	
+		if ((rd) && (!wr)) {
+	
+			// Read low address
+	
+			// DIR 1
 			gpio_put(DIR1_OUT, 0);
 			gpio_put(DIR2_OUT, 1);
 			gpio_put(DIR3_OUT, 1);
 	
-			// SELECT 1 ON LOW ADDRESS
+	
+			// SELECT 1
 			gpio_put(SEL1_OUT, 0);
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 	
+	
 			sleep_us(INST_DELAY);
-		
+			
+			// GPIO BUS direction IN
 			set_bus_dir(0);
-		
+			
+	
 			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
 	
-			// DIRECTION OFF
+	
+			// Read high address
+	
+			// DIR 2
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 0);
+			gpio_put(DIR3_OUT, 1);
+			
+			// SELECT 2
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 0);
+			gpio_put(SEL3_OUT, 1);
+	
+	
+			sleep_us(INST_DELAY);
+	
+	
+			// GPIO BUS direction IN
+			set_bus_dir(0);
+			
+			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)	<< 8; // A8 - A15
+	
+	
+			m_adr = low_adr | high_adr;
+			
+	
+	
+	
+			wr = gpio_get(WR_INPUT);
+			
+	
+			// Device write
+			if (!wr) {
+	
+				if (low_adr == SERIAL_PORT) {
+
+
+
+					// DIR 2
+					gpio_put(DIR1_OUT, 1);
+					gpio_put(DIR2_OUT, 1);
+					gpio_put(DIR3_OUT, 0);
+					
+					// SELECT 2
+					gpio_put(SEL1_OUT, 1);
+					gpio_put(SEL2_OUT, 1);
+					gpio_put(SEL3_OUT, 0);
+
+
+				    gpio_set_dir_masked(bus_mask, bus_mask);
+				    
+					sleep_us(INST_DELAY);  // 3
+
+
+					set_bus_dir(0);
+					
+					io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
+	
+					sprintf(tx_buffer, "%s", io_w_op);
+					
+					tud_cdc_n_write(0, tx_buffer, 1);
+			        tud_cdc_n_write_flush(0);
+				}
+	
+	
+			}
+
+			// Device read
+			else {
+	
+				if (low_adr == SERIAL_PORT) {				
+				    
+				    if (rx_data_available) {
+	
+						printf("GOT DATA: %c \n", rx_buffer);
+	
+	
+	
+						// DIR 3
+						gpio_put(DIR1_OUT, 1);
+						gpio_put(DIR2_OUT, 1);
+						gpio_put(DIR3_OUT, 0);
+	
+						// SLECT 3
+				f		gpio_put(SEL1_OUT, 1);
+						gpio_put(SEL2_OUT, 1);
+						gpio_put(SEL3_OUT, 0);
+	
+	
+					    gpio_set_dir_masked(bus_mask, bus_mask);
+					    
+	
+				        io_r_op = rx_buffer[rx_head];
+					
+					
+					    set_bus_dir(1);
+					    
+					    gpio_set_dir_masked(bus_mask, bus_mask);
+					    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
+	
+						sleep_us(INST_DELAY);
+					    
+				        rx_head++;
+				        
+				        if (rx_head >= CFG_TUD_CDC_RX_BUFSIZE) rx_head = 0;
+				        if (rx_head == rx_tail) rx_data_available = false;
+				        
+				    }
+				    
+				}			
+	
+			}
+	
+			
+			// DIR OFF
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+			
+			// SELECT OFF
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
+		}
+	}
+
+	//
+	// Memory access
+	//
+
+	else if (pin == MREQ_INPUT) {
+
+		// Memory read
+
+
+		rd = gpio_get(RD_INPUT);
+
+		if (!rd) {
+
+			// DIR 1
+			gpio_put(DIR1_OUT, 0);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+
+			// SELECT 1
+			gpio_put(SEL1_OUT, 0);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
+
+			// GPIO BUS direction IN
+			set_bus_dir(0);
+
+			sleep_us(INST_DELAY);  // 1
+
+
+			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
+
+
+			// DIR OFF
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+
+			// SELECT OFF
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
+
+
+		    // gpio_set_dir_masked(bus_mask, 0);
+
+			// DIR 2 ON
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 0);
+			gpio_put(DIR3_OUT, 1);
+
+			// SELECT 2
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 0);
+			gpio_put(SEL3_OUT, 1);
+
+			
+			sleep_us(INST_DELAY);   // 2
+			
+	
+			set_bus_dir(0);
+	
+			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
+
+
+			// DIR OFF
 			gpio_put(DIR1_OUT, 1);
 			gpio_put(DIR2_OUT, 1);
 			gpio_put(DIR3_OUT, 1);
@@ -1907,116 +2009,146 @@ void bus_callback(uint pin, uint32_t events) {
 
 			gpio_set_dir_masked(bus_mask, 0);
 			
+			m_adr = low_adr | high_adr;
+			
+		
+	
+			// DIR 3
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+			
+			// SLECT 3
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 0);
+			
+
+			mem_w_op = ram[cur_bank][m_adr];
+			
+	
+			set_bus_dir(1);
+			
+			gpio_set_dir_masked(bus_mask, bus_mask);
+			gpio_put_masked(bus_mask, (mem_w_op << BUS_GPIO_START));
+
+
+
+			sleep_us(INST_DELAY);  // 3
+
+			
+			// DIR OFF
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+			
+			// SELECT OFF
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
+		
+			
+			gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
+			gpio_set_dir_masked(bus_mask, 0);
+			
+		}
+		
+
+		else {
+
+			// DIR 1
+			gpio_put(DIR1_OUT, 0);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+
+			// SELECT 1
+			gpio_put(SEL1_OUT, 0);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
+
+			// GPIO BUS direction IN
+			set_bus_dir(0);
+
+			sleep_us(INST_DELAY);  // 1
+
+
+			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
+
+
+			// DIR OFF
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+
+			// SELECT OFF
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
+
+
+			// gpio_set_dir_masked(bus_mask, 0);
+
+	
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 0);
+			gpio_put(DIR3_OUT, 1);
+			
+			// SELECT 2 ON HIGH ADDRESS
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 0);
+			gpio_put(SEL3_OUT, 1);
+			
+			sleep_us(INST_DELAY);   // 2
+			
+	
+			set_bus_dir(0);
+	
+			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
+	
+	
+			// DIRECTION OFF
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+			
+			// SELECT OFF
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
+	
+			m_adr = low_adr | high_adr;
+	
+			gpio_set_dir_masked(bus_mask, 0);
+	
 			rd = gpio_get(RD_INPUT);
+			wr = gpio_get(WR_INPUT);
 	
-			// Check if NOT RD and NOT MREQ
-			
-			if (!rd) {
-			
-				// DIRECTION 2 ON HIGH ADDRESS
-				gpio_put(DIR1_OUT, 1);
-				gpio_put(DIR2_OUT, 0);
-				gpio_put(DIR3_OUT, 1);
-				
-				// SELECT 2 ON HIGH ADDRESS
-				gpio_put(SEL1_OUT, 1);
-				gpio_put(SEL2_OUT, 0);
-				gpio_put(SEL3_OUT, 1);
-				
-				sleep_us(INST_DELAY); 
-				
-		
-				set_bus_dir(0);
-		
-				high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
+			if ((rd) && (!wr)) {
 	
-	
-				// DIRECTION OFF
-				gpio_put(DIR1_OUT, 1);
-				gpio_put(DIR2_OUT, 1);
-				gpio_put(DIR3_OUT, 1);
-				
-				// SELECT OFF
-				gpio_put(SEL1_OUT, 1);
-				gpio_put(SEL2_OUT, 1);
-				gpio_put(SEL3_OUT, 1);
-				
-	
-				gpio_set_dir_masked(bus_mask, 0);
-				
-				m_adr = low_adr | high_adr;
-				
-			
-		
-				// DIRECTION 3 DATA
-				gpio_put(DIR1_OUT, 1);
-				gpio_put(DIR2_OUT, 1);
-				gpio_put(DIR3_OUT, 1);
+				// sleep_ms(0);
 				
 				// SLECT 3 DATA
 				gpio_put(SEL1_OUT, 1);
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 0);
-				
-
-				if (low_adr == SERIAL_PORT) {
-					
-				    // Z80 is reading from serial port
-		        	
-				    w_op = 0;
-				    
-				    if (rx_data_available) {
-
-
-						printf("GOT DATA: %s \n", rx_buffer);
-						
-				        w_op = rx_buffer[rx_head];
-					
-					
-					    set_bus_dir(1);
-					    
-					    gpio_set_dir_masked(bus_mask, bus_mask);
-					    gpio_put_masked(bus_mask, (w_op << BUS_GPIO_START));
-					    
-					    
-				        rx_head++;
-				        
-				        if (rx_head >= CFG_TUD_CDC_RX_BUFSIZE) rx_head = 0;
-				        if (rx_head == rx_tail) rx_data_available = false;
-				        
-				    }
-				    
-				}
-				else{
-				
-					
-					w_op = ram[cur_bank][m_adr];
-					
-			
-					set_bus_dir(1);
-					
-					gpio_set_dir_masked(bus_mask, bus_mask);
-					gpio_put_masked(bus_mask, (w_op << BUS_GPIO_START));
 	
-	
-					
-				}
-				
-				sleep_us(INST_DELAY);
-
-				
-				// DIRECTION OFF
+				// DIRECTION 3 DATA
 				gpio_put(DIR1_OUT, 1);
 				gpio_put(DIR2_OUT, 1);
-				gpio_put(DIR3_OUT, 1);
+				gpio_put(DIR3_OUT, 0);
+	
+	
+			    gpio_set_dir_masked(bus_mask, bus_mask);
+			    
+				sleep_us(INST_DELAY);  // 3
+	
+	
+				set_bus_dir(0);
 				
-				// SELECT OFF
-				gpio_put(SEL1_OUT, 1);
-				gpio_put(SEL2_OUT, 1);
-				gpio_put(SEL3_OUT, 1);
-			
-				
-				gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
+				mem_r_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
+	
+				ram[cur_bank][m_adr] = mem_r_op;
+	
 				gpio_set_dir_masked(bus_mask, 0);
 			}
 		}
@@ -2068,18 +2200,20 @@ void tud_cdc_rx_cb(uint8_t itf)
         rx_buffer[count] = 0; // null-terminate the string
         
         // now echo data back to the console on CDC 0
-        // printf("RX1: %s\n", rx_buffer);
+        printf("RX1: %s\n", rx_buffer);
 
         // and echo back OK on CDC 1
         // tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
         // tud_cdc_n_write_flush(itf);
+
+		rx_data_available = true;
     }
     
     else {
 
         rx_buffer[count] = 0;
 
-		// printf("RX0: %s\n", rx_buffer);
+		printf("RX0: %s\n", rx_buffer);
 
         rx_data_available = true;
 	}
@@ -2157,10 +2291,8 @@ int main() {
 	pwm_config_set_wrap(&config, target_wrap);
 	pwm_init(slice_num, &config, true);	
 
-	// Enable CPU clock	
 
-	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
-
+	// SD 
 
 	pico_fatfs_spi_config_t fs_config = {
 		spi0, // if unmatched SPI pin assignments with spi0/spi1 or explicitly
@@ -2351,8 +2483,12 @@ int main() {
 
 
 	m_adr = 0;
-	r_op = 0;
-	w_op = 0;
+
+	io_r_op = 0;
+	io_w_op = 0;
+
+	mem_r_op = 0;
+	mem_w_op = 0;
 
 
 	multicore_launch_core1(display_loop);
@@ -2389,6 +2525,11 @@ int main() {
 	// 	gpio_set_irq_enabled(WR_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 
 
+	// Enable CPU clock
+
+	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
+
+
 	while (true) {
 
 		if (disabled) {
@@ -2396,6 +2537,7 @@ int main() {
 			confirmed = true;
 			while (disabled) {
 			};
+			gpio_put(LED_PIN, 0);
 		}
 
 		tud_task();
