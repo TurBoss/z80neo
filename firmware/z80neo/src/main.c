@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-
+// USB
 #include <bsp/board_api.h>
 #include <tusb.h>
 
@@ -14,6 +14,7 @@
 #include <pico/stdlib.h>
 #include <pico/time.h>
 
+// Pico hardware
 #include <hardware/adc.h>
 #include <hardware/clocks.h>
 #include <hardware/gpio.h>
@@ -94,6 +95,7 @@ const uint8_t WRITE_COUNT = 2;
 
 // Read pass count.
 const uint8_t READ_COUNT = 2;
+
 
 //==============================================================================
 // End of configuration constants.
@@ -581,9 +583,12 @@ void display_loop() {
 
 			print_string(0, 0, "L:%04x", low_adr);
 			print_string(0, 1, "H:%04x", high_adr);
+
 			print_string(0, 3, "&:%04x", m_adr);
+
 			print_string(10, 0, "MR: %02x", mem_r_op);
 			print_string(10, 1, "MW: %02x", mem_w_op);
+
 			print_string(10, 2, "IOR:%02x", io_r_op);
 			print_string(10, 3, "IOW:%02x", io_w_op);
 		}
@@ -1732,21 +1737,23 @@ void reset_hold(void) {
 //
 //
 
+
+
 // 0 IN, 1 OUT
 void set_bus_dir(int direction) {
 	
-	// BUS GPIO 0 <--> 
+	// BUS GPIO 0 <--> 8
 	int pin = 0;
-	if (direction) {
-		for (pin = BUS_GPIO_START; pin < BUS_GPIO_END; pin++) {
+
+	for (pin = BUS_GPIO_START; pin < BUS_GPIO_END; pin++) {
+		if (direction) {
 			gpio_set_dir(pin, GPIO_OUT);
 		}
-	}
-	else {
-		for (pin = BUS_GPIO_START; pin < BUS_GPIO_END; pin++) {
+		else {
 			gpio_set_dir(pin, GPIO_IN);
 		}
 	}
+
 }
 
 
@@ -1890,7 +1897,7 @@ void bus_callback(uint pin, uint32_t events) {
 						gpio_put(DIR3_OUT, 0);
 	
 						// SLECT 3
-				f		gpio_put(SEL1_OUT, 1);
+						gpio_put(SEL1_OUT, 1);
 						gpio_put(SEL2_OUT, 1);
 						gpio_put(SEL3_OUT, 0);
 	
@@ -2233,9 +2240,9 @@ bool previous_we = false;
 
 int main() {
 
-	vreg_set_voltage(VREG_VOLTAGE_1_30);
-	sleep_ms(1);
-	set_sys_clock_khz(300 * KHZ, true);
+//	vreg_set_voltage(VREG_VOLTAGE_1_30);
+//	sleep_ms(1);
+//	set_sys_clock_khz(300 * KHZ, true);
 
 	// USB
     board_init();
