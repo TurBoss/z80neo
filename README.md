@@ -86,18 +86,23 @@ topOfStack
 ## pictures
 
 the thing
+
 ![z80neo full thing](https://github.com/turboss/z80neo/blob/main/images/full_thing.jpg?raw=true)
 
 back wiring
+
 ![z80neo cpu wires](https://github.com/turboss/z80neo/blob/main/images/cpu_back.jpg?raw=true)
 
 pulse view capture
+
 ![z80neo pulseview](https://github.com/turboss/z80neo/blob/main/images/pulse_view.png?raw=true)
 
-screen
-![z80neo screen](https://github.com/turboss/z80neo/blob/main/images/screen.png?raw=true)
+display
+
+![z80neo screen](https://github.com/turboss/z80neo/blob/main/images/display.png?raw=true)
 
 serial out
+
 ![z80neo serial](https://github.com/turboss/z80neo/blob/main/images/serial_out.png?raw=true)
 
 
