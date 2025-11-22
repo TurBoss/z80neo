@@ -5,7 +5,7 @@ include(pico_sdk_import.cmake)
 include(pico_extras_import_optional.cmake)
 
 set(PICO_BOARD pico_2)
-set(PROJECT_NAME "turboram" C CXX ASM)
+set(PROJECT_NAME "z80neo" C CXX ASM)
 
 
 project(${PROJECT_NAME})

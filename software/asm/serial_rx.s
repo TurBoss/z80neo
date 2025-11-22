@@ -1,31 +1,18 @@
-;-- UART. Ejemplo 04: Prueba de lectura del canal de datos recibidos de
-;-- la UART. Se esta constantemente leyendo su valor y sacandolo por los
-;-- LEDs. Si desde el terminal enviamos caracteres, veremos su valor
-;-- ASCII en los LEDs
+;port
+SERIAL:	equ	0x80
 
-;---- PUERTOS
-LEDS:			equ	0x10
-SERIAL_DATA:	equ	0x80
-
-;--- Comienzo del programa
 org 0x0000
 
 main:
-  ;-- Configurar la pila
   ld sp, 0x3fff
 
 
 loop:
-  ;-- Leer lo ultimo recibido por la UART
-  in A, (SERIAL_DATA)
+  in A, (SERIAL)
 
-  ;-- Mostrarlo en los LEDs
-  out (LEDS), A
+  out (SERIAL), A
 
-  ;-- Repetir
   jp loop
 
 
-
-;  org 0x3fff
 topOfStack:

@@ -2,21 +2,21 @@ set(INCLUDE_DIR "include")
 
 add_subdirectory(libs/pico_fatfs)
 
-add_executable(turboram
+add_executable(z80neo
 	src/ssd1306_i2c.c
 	src/u8x8_fonts.c
 	src/usb_descriptors.c
 	src/main.c
     )
 
-target_include_directories(turboram PRIVATE
+target_include_directories(z80neo PRIVATE
 	${INCLUDE_DIR}
     )
 
 
 
 # pull in common dependencies
-target_link_libraries(turboram
+target_link_libraries(z80neo
 	pico_stdlib
 	pico_multicore
 	pico_unique_id
@@ -39,13 +39,13 @@ target_link_libraries(turboram
 	)
 
 # enable USB CDC
-pico_enable_stdio_usb(turboram 1)
+pico_enable_stdio_usb(z80neo 1)
 
-pico_add_extra_outputs(turboram)
+pico_add_extra_outputs(z80neo)
 
 # create map/bin/hex file etc.
-pico_add_extra_outputs(turboram)
+pico_add_extra_outputs(z80neo)
 
 
 # add url via pico_set_program_url
-example_auto_set_url(turboram)
+example_auto_set_url(z80neo)

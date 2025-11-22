@@ -1,7 +1,7 @@
 ;---- PUERTOS
 LEDS:			equ 0x40
 SERIAL_DATA:	equ 0x80
-SERIAL_STATUS:	equ 0x81
+; SERIAL_STATUS:	equ 0x81
 
 ;--- Comienzo del programa
 org 0x0000
@@ -35,11 +35,11 @@ LOOP:
 READ_CHAR:
 
   ;-- Esperar hasta que llegue un caracter
-  in A, (SERIAL_STATUS)
+  ;in A, (SERIAL_STATUS)
 
-  and 0x02
+  ;and 0x02
 
-  jr z, READ_CHAR ;-- No llega, esperar
+  ;jr z, READ_CHAR ;-- No llega, esperar
 
   ;-- Leer el caracter que ha llegado
   in A, (SERIAL_DATA)
@@ -56,20 +56,20 @@ READ_CHAR:
 PRINT_CHAR:
 
   ;-- Guardar A en la pila, para no perderlo
-  push AF
+  ;push AF
 
-READY_TX:
+;READY_TX:
 
   ;-- Leer registro de estaus de la UART
   ;-- ¿Se puede enviar?
-  in A, (SERIAL_STATUS)
-  and 0x01
-  jp nz, READY_TX ;-- No--> Esperar
+  ;in A, (SERIAL_STATUS)
+  ;and 0x01
+  ;jp nz, READY_TX ;-- No--> Esperar
 
   ;-- Listo para transmitir
 
   ;-- Recuperar de la pila el caracter a enviar
-  pop AF
+  ;pop AF
 
   ;-- Enviar caracter
   out (SERIAL_DATA), A
