@@ -10,3 +10,4 @@ firmware/z80neo/build/
 .cproject
 *.hex
 *.bin
+*.o
