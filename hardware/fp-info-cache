@@ -1,4 +1,4 @@
-26242582073596100
+26239054863438838
 Audio_Module
 Reverb_BTDR-1H
 Digital Reverberation Unit, http://www.belton.co.kr/inc/downfile.php?seq=17&file=pdf (footprint from http://www.uk-electronic.de/PDF/BTDR-1.pdf)
@@ -95311,20 +95311,6 @@ rotary encoder illuminated switch vertical
 0
 9
 8
-SSD1306
-128x64OLED
-
-
-0
-4
-4
-SSD1306
-GME12864_OLED
-Warning: The footprint dimensions are based on 0.96 inch lcd
-
-0
-4
-4
 Sensor
 ASAIR_AM2302_P2.54mm_Lead2.75mm_TabDown
 Temperature and humidity module, http://akizukidenshi.com/download/ds/aosong/AM2302.pdf

@@ -37,8 +37,11 @@
 //#define CLK_FAST_DEFAULT (10 * MHZ)
 
 
-#define SERIAL_PORT_1 0x80
-#define SERIAL_PORT_2 0x90
+#define SERIAL_PORT_1	0x80
+#define SERIAL_STATUS_1	0x81
+
+#define SERIAL_PORT_2	0x90
+#define SERIAL_STATUS_2	0x91
 
 
 
@@ -161,7 +164,7 @@ void save();
 
 volatile bool DEBUG_ADC = false;
 
-volatile char MACHINE[FILE_LENGTH] = "Z80";
+volatile char MACHINE[FILE_LENGTH] = "Z80 CPU";
 volatile char BANK_PROG[8][FILE_LENGTH];
 
 volatile uint16_t CANCEL2_ADC = 0xFFF;
@@ -1881,7 +1884,73 @@ void bus_callback(uint pin, uint32_t events) {
 
 					// printf("GOT DATA: %s\0\r\n", read_buffer);
 
+					// DIR 3
+					gpio_put(DIR1_OUT, 1);
+					gpio_put(DIR2_OUT, 1);
+					gpio_put(DIR3_OUT, 1);
 
+					// SLECT 3
+					gpio_put(SEL1_OUT, 1);
+					gpio_put(SEL2_OUT, 1);
+					gpio_put(SEL3_OUT, 0);
+
+
+				    gpio_set_dir_masked(bus_mask, bus_mask);
+				    
+					
+			        io_r_op = rx_buffer[rx_head];
+				
+					// GPIO BUS direction OUT
+				    set_bus_dir(1);
+				    
+				    gpio_set_dir_masked(bus_mask, bus_mask);
+				    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
+
+					sleep_us(INST_DELAY);
+				    
+			        rx_head++;
+			        
+			        if (rx_head > CFG_TUD_CDC_RX_BUFSIZE){
+						rx_head = 0;
+						rx_data_available = false;
+					}
+			        else if (rx_head >= rx_tail-1) {
+						rx_head = 0;
+						rx_tail = 0;
+						rx_data_available = false;
+					}				        
+			    }
+			}
+				
+			if (low_adr == SERIAL_STATUS_1) {
+			    
+			    if (rx_data_available) {
+
+					// DIR 3
+					gpio_put(DIR1_OUT, 1);
+					gpio_put(DIR2_OUT, 1);
+					gpio_put(DIR3_OUT, 1);
+
+					// SLECT 3
+					gpio_put(SEL1_OUT, 1);
+					gpio_put(SEL2_OUT, 1);
+					gpio_put(SEL3_OUT, 0);
+
+
+				    gpio_set_dir_masked(bus_mask, bus_mask);
+				    
+					
+				    io_r_op = 0x01;
+
+					// GPIO BUS direction OUT
+				    set_bus_dir(1);
+				    
+				    gpio_set_dir_masked(bus_mask, bus_mask);
+				    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
+
+					sleep_us(INST_DELAY);
+				}
+				else{ 
 
 					// DIR 3
 					gpio_put(DIR1_OUT, 1);
@@ -1894,29 +1963,19 @@ void bus_callback(uint pin, uint32_t events) {
 					gpio_put(SEL3_OUT, 0);
 
 
-				    gpio_set_dir_masked(bus_mask, bus_mask);
-				    
-					
-			        io_r_op = read_buffer[rx_head];
-				
+					gpio_set_dir_masked(bus_mask, bus_mask);
+
+
+					io_r_op = 0x00;
+
 					// GPIO BUS direction OUT
-				    set_bus_dir(1);
-				    
-				    gpio_set_dir_masked(bus_mask, bus_mask);
-				    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
+					set_bus_dir(1);
+
+					gpio_set_dir_masked(bus_mask, bus_mask);
+					gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
 
 					sleep_us(INST_DELAY);
-				    
-			        rx_head++;
-			        
-			        if (rx_head >= 4){
-						rx_head = 0;
-					}
-			        if (rx_head == rx_tail) {
-						rx_tail = 0;
-						rx_data_available = false;
-					}				        
-			    }
+				}
 			}			
 
 
@@ -2181,7 +2240,7 @@ void custom_cdc_task(void)
 // callback when data is received on a CDC interface
 void tud_cdc_rx_cb(uint8_t itf)
 {
-	// rx_head = 0;
+	rx_head = 0;
     // allocate buffer for the data in the stack
     
 
@@ -2215,6 +2274,7 @@ void tud_cdc_rx_cb(uint8_t itf)
 
         rx_buffer[count] = 0;
 		rx_tail = count;
+
 		strcpy(read_buffer, rx_buffer);
 
 		// printf("RX0: %s %d \n", rx_buffer, count);
@@ -2365,8 +2425,6 @@ int main() {
 	//
 	//
 
-	// sd_test();
-
 	clear_screen();
 	WriteString(buf, 0, 0, "SD READ");
 	render(buf, &frame_area);
@@ -2374,7 +2432,6 @@ int main() {
 
 	sd_read_init();
 
-	/*
 	clear_screen();
 	WriteString(buf, 0, 0, "LOAD PROGS");
 	render(buf, &frame_area);
@@ -2382,7 +2439,7 @@ int main() {
 
 
 	load_init_progs();
-	*/
+
 
 	clear_screen();
 
@@ -2524,7 +2581,7 @@ int main() {
 	
 	gpio_set_irq_enabled_with_callback(MREQ_INPUT, GPIO_IRQ_EDGE_FALL, true, &bus_callback);
 	gpio_set_irq_enabled_with_callback(IORQ_INPUT, GPIO_IRQ_EDGE_FALL, true, &bus_callback);
-									   
+	
 	//	gpio_set_irq_enabled(RD_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 	// 	gpio_set_irq_enabled(WR_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 
