@@ -5,14 +5,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-// USB
-#include <bsp/board_api.h>
-#include <tusb.h>
 
-// Pico2
+// Pico 2
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
 #include <pico/time.h>
+#include <pico/binary_info.h>
+
 
 // Pico hardware
 #include <hardware/adc.h>
@@ -21,22 +20,47 @@
 #include <hardware/pwm.h>
 #include <hardware/spi.h>
 #include <hardware/vreg.h>
+#include <hardware/uart.h>
+#include <hardware/irq.h>
+#include <hardware/i2c.h>
 
-// Screen
-#include "ssd1306_i2c.h"
 
 // SD Card
 #include "ff.h"
 #include "tf_card.h"
 
+// Utils
+#include "utils.h"
 
-//#undef CLK_SLOW_DEFAULT
-//#undef CLK_FAST_DEFAULT
-//
-//#define CLK_SLOW_DEFAULT (100 * KHZ)
-//#define CLK_FAST_DEFAULT (10 * MHZ)
+// USB Serial
+// #include "cdc.h"
 
 
+// Screen
+#include "ssd1306_i2c.h"
+
+// Boot logo
+#include "logo.h"
+
+
+
+
+// Uart
+#define UART_ID         uart0
+#define BAUD_RATE       115200
+#define DATA_BITS       8
+#define STOP_BITS       1
+#define PARITY          UART_PARITY_NONE
+
+
+
+#undef CLK_SLOW_DEFAULT
+#undef CLK_FAST_DEFAULT
+
+#define CLK_SLOW_DEFAULT (100 * KHZ)
+#define CLK_FAST_DEFAULT (10 * MHZ)
+
+// SIO
 #define SERIAL_PORT_1	0x80
 #define SERIAL_STATUS_1	0x81
 
@@ -44,35 +68,29 @@
 #define SERIAL_STATUS_2	0x91
 
 
-
+// CLK
 #define PWM_WRAP 65535    // 16-bit resolution
 
 
-#define INST_DELAY 50
+
+#define INST_DELAY 10 // 45
+
+// uart RX things
+bool rx_data_available = false;
+
+// char rx_char = 0;
+
+char rx_buffer[8];
+uint8_t rx_count = 0;
+uint8_t rx_index = 0;
 
 
 
 // PWM CLK slice
 uint slice;
 
-
-
-// Buffer for received data
-uint8_t rx_buffer[CFG_TUD_CDC_RX_BUFSIZE];
-uint8_t tx_buffer[CFG_TUD_CDC_TX_BUFSIZE];
-
-uint8_t rx_head = 0;
-uint8_t rx_tail = 0;
-
-bool rx_data_available = false;
-
-uint8_t read_buffer[4];
-
-
-
-
-
 bool spi_configured;
+
 
 struct render_area frame_area = {
 	start_col : 0,
@@ -89,7 +107,7 @@ const bool PRE_ALLOCATE = true;
 const bool SKIP_FIRST_LATENCY = true;
 
 // Size of read/write.
-#define BUF_SIZE 512
+#define BUF_SIZE 1024
 
 // File size in MB where MB = 1,000,000 bytes.
 const uint32_t FILE_SIZE_MB = 5;
@@ -117,7 +135,23 @@ uint8_t *disp_buf_0 = (uint8_t *)buf32;
 uint8_t *disp_buf_1 = (uint8_t *)buf32;
 uint8_t *disp_buf_2 = (uint8_t *)buf32;
 uint8_t *disp_buf_3 = (uint8_t *)buf32;
+uint8_t *disp_buf_4 = (uint8_t *)buf32;
+uint8_t *disp_buf_5 = (uint8_t *)buf32;
+uint8_t *disp_buf_6 = (uint8_t *)buf32;
+uint8_t *disp_buf_7 = (uint8_t *)buf32;
 
+
+
+bool mreq_status = false;
+bool iorq_status = false;
+
+//
+// function definitions
+//
+
+
+
+void show_logo(void);
 void show_info(void);
 
 void reset_release(void);
@@ -138,14 +172,14 @@ void save();
 //
 //
 
-#define VERSION "  v0.3 - alpha  "
+#define VERSION "v0.6.2 - ALPHA"
 
 //
-// ADC Configuration (MPF.INI file!)
+// ADC Configuration (Z80.INI file!)
 //
 
 #define FILE_LENGTH 17
-#define FILE_BUFF_SIZE 64
+#define FILE_BUFF_SIZE 12
 #define FILE_EXT "*.HEX"
 
 //
@@ -164,15 +198,15 @@ void save();
 
 volatile bool DEBUG_ADC = false;
 
-volatile char MACHINE[FILE_LENGTH] = "Z80 CPU";
-volatile char BANK_PROG[8][FILE_LENGTH];
+char MACHINE[FILE_LENGTH] = "Z80 CPU";
+char BANK_PROG[8][FILE_LENGTH];
 
 volatile uint16_t CANCEL2_ADC = 0xFFF;
-volatile uint16_t CANCEL_ADC = 0x900;
-volatile uint16_t OK_ADC = 0x7C0;
-volatile uint16_t BACK_ADC = 0x510;
-volatile uint16_t DOWN_ADC = 0x220;
-volatile uint16_t UP_ADC = 0x100;
+volatile uint16_t CANCEL_ADC =  0xBFF;
+volatile uint16_t OK_ADC =      0x7FF;
+volatile uint16_t BACK_ADC =    0x5FF;
+volatile uint16_t DOWN_ADC =    0x2FF;
+volatile uint16_t UP_ADC =      0x0FF;
 
 //
 //
@@ -193,58 +227,83 @@ display_line file;
 const char *hexStringChar[] = {"0", "1", "2", "3", "4", "5", "6", "7",
 							   "8", "9", "a", "b", "C", "d", "E", "F"};
 
-#define TEXT_BUFFER_SIZE 256
+#define TEXT_BUFFER_SIZE 512
+
+#define BUFFER_SIZE 8
 
 char text_buffer[TEXT_BUFFER_SIZE];
 
-char tbmon_text_buffer[4][17];
+char line_buffer1[24];
+char line_buffer2[24];
+char line_buffer3[24];
+char line_buffer4[24];
+char line_buffer5[24];
+char line_buffer6[24];
+char line_buffer7[24];
+char line_buffer8[24];
+
+char tbmon_text_buffer[8][17];
 
 char line1[TEXT_BUFFER_SIZE];
 char line2[TEXT_BUFFER_SIZE];
 char line3[TEXT_BUFFER_SIZE];
 char line4[TEXT_BUFFER_SIZE];
+char line5[TEXT_BUFFER_SIZE];
+char line6[TEXT_BUFFER_SIZE];
+char line7[TEXT_BUFFER_SIZE];
+char line8[TEXT_BUFFER_SIZE];
 
-#define BYTES_PER_ROW 4
+#define BYTES_PER_ROW 8
 #define BYTES_PER_LINE 16
-#define LINES 4
+#define LINES 8
 
-char *screen[LINES] = {line1, line2, line3, line4};
+char *screen[LINES] = {line1, line2, line3, line4, line5, line6, line7, line8};
 
 //
 // DEFINE GPIO
 //
 
-#define BUS_GPIO_START 0
-#define BUS_GPIO_END 8
+#define UART_TX_PIN     0
+#define UART_RX_PIN     1
 
-#define SEL1_OUT 8	// ADDRESS LOW
-#define SEL2_OUT 9	// ADDRESS HIGH
-#define SEL3_OUT 10 // DATA
+#define PICO_I2C_SDA_PIN 2
+#define PICO_I2C_SCL_PIN 3
 
-#define DIR1_OUT 11
-#define DIR2_OUT 12
-#define DIR3_OUT 13
+#define PIN_SPI1_CS     9
+#define PIN_SPI1_SCK    10
+#define PIN_SPI1_MOSI   11
 
-#define MREQ_INPUT 14
-#define RD_INPUT 15
+#define BUS_GPIO_START  12
+#define BUS_GPIO_END    19
 
-#define PIN_SPI1_MISO   16
-#define PIN_SPI1_SCK    17
-#define PIN_SPI1_CS     18
-#define PIN_SPI1_MOSI   19
+#define MREQ_INPUT      20
+#define RD_INPUT        21
 
-#define PICO_DEFAULT_I2C_SDA_PIN 20
-#define PICO_DEFAULT_I2C_SCL_PIN 21
+#define IORQ_INPUT      22
+#define WR_INPUT        23
 
-#define GPIO_PWM_SIG 22
+#define PIN_SPI1_MISO   24
 
-#define IORQ_INPUT 26
-#define WR_INPUT 27
+#define LED_PIN         25
 
-#define ADC_KEYS_INPUT 28
+#define SEL1_OUT        26	// ADDRESS LOW
+#define SEL2_OUT        27	// ADDRESS HIGH
+#define SEL3_OUT        28  // DATA
+
+#define DIR1_OUT        29
+#define DIR2_OUT        30
+#define DIR3_OUT        31
+
+#define GPIO_PWM_SIG    32
+
+#define RESET_OUT       33
+
+#define ADC_KEYS_INPUT  40  // ADC KEYS
 
 
-const uint8_t LED_PIN = PICO_DEFAULT_LED_PIN;
+
+#define PICO_I2C_INSTANCE i2c1
+
 
 //
 //
@@ -275,7 +334,7 @@ volatile bool confirmed = false;
 uint8_t in_bytes[1024];
 
 
-uint8_t bus_mask = 0;
+uint32_t bus_mask = 0;
 uint32_t gpio = 0;
 
 uint8_t low_adr = 0x00;
@@ -288,13 +347,13 @@ uint8_t io_w_op = 0x00;
 uint8_t mem_r_op = 0x00;
 uint8_t mem_w_op = 0x00;
 
+uint8_t serial_status_1 = 0x00;
+uint8_t serial_status_2 = 0x00;
+
 uint32_t d_adr = 0;
 uint32_t dr_op = 0;
 uint32_t dw_op = 0;
 
-//
-// Utilities
-//
 
 unsigned char decode_hex(char c) {
 	if (c >= 65 && c <= 70)
@@ -308,12 +367,15 @@ unsigned char decode_hex(char c) {
 }
 
 // unused
-
 unsigned char reverse_bits(unsigned char b) {
-	return (b & 0b00000001) << 3 | (b & 0b00000010) << 1 |
-		   (b & 0b00000100) >> 1 | (b & 0b00001000) >> 3 |
-		   (b & 0b00010000) << 3 | (b & 0b00100000) << 1 |
-		   (b & 0b01000000) >> 1 | (b & 0b10000000) >> 3;
+	return (b & 0b00000001) << 3 |
+	       (b & 0b00000010) << 1 |
+		   (b & 0b00000100) >> 1 |
+		   (b & 0b00001000) >> 3 |
+		   (b & 0b00010000) << 3 |
+		   (b & 0b00100000) << 1 |
+		   (b & 0b01000000) >> 1 |
+		   (b & 0b10000000) >> 3;
 }
 
 
@@ -330,19 +392,30 @@ void clear_bank(uint8_t bank) {
 
 void clear_screen() {
 	memset(buf, 0, SSD1306_BUF_LEN);
+	
 	render(buf, &frame_area);
+	
 	memset(line1, 0, TEXT_BUFFER_SIZE);
 	memset(line2, 0, TEXT_BUFFER_SIZE);
 	memset(line3, 0, TEXT_BUFFER_SIZE);
 	memset(line4, 0, TEXT_BUFFER_SIZE);
+	memset(line5, 0, TEXT_BUFFER_SIZE);
+	memset(line6, 0, TEXT_BUFFER_SIZE);
+	memset(line7, 0, TEXT_BUFFER_SIZE);
+	memset(line8, 0, TEXT_BUFFER_SIZE);
 }
 
 void clear_screen0() {
 	memset(buf, 0, SSD1306_BUF_LEN);
+	
 	memset(line1, 0, TEXT_BUFFER_SIZE);
 	memset(line2, 0, TEXT_BUFFER_SIZE);
 	memset(line3, 0, TEXT_BUFFER_SIZE);
 	memset(line4, 0, TEXT_BUFFER_SIZE);
+	memset(line5, 0, TEXT_BUFFER_SIZE);
+	memset(line6, 0, TEXT_BUFFER_SIZE);
+	memset(line7, 0, TEXT_BUFFER_SIZE);
+	memset(line8, 0, TEXT_BUFFER_SIZE);
 }
 
 void clear_line0(int line) {
@@ -357,6 +430,15 @@ void clear_line0(int line) {
 		memset(line3, 0, TEXT_BUFFER_SIZE);
 		break;
 	case 4:
+		memset(line4, 0, TEXT_BUFFER_SIZE);
+		break;
+	case 5:
+		memset(line4, 0, TEXT_BUFFER_SIZE);
+		break;
+	case 6:
+		memset(line4, 0, TEXT_BUFFER_SIZE);
+		break;
+	case 7:
 		memset(line4, 0, TEXT_BUFFER_SIZE);
 		break;
 	}
@@ -434,8 +516,13 @@ void print_char(int x, int y, char c) {
 
 void disp_plot0(int x, int y) { SetPixel(buf, x, y, true); }
 
-void disp_plot(int x, int y) {
+void plot_pixel(int x, int y) {
 	SetPixel(buf, x, y, true);
+	render(buf, &frame_area);
+}
+
+void unplot_pixel(int x, int y) {
+	SetPixel(buf, x, y, false);
 	render(buf, &frame_area);
 }
 
@@ -448,6 +535,11 @@ void disp_line(int x1, int y1, int x2, int y2) {
 	render(buf, &frame_area);
 }
 
+void unplot_line(int x1, int y1, int x2, int y2) {
+	DrawLine(buf, x1, y1, x2, y2, false);
+	render(buf, &frame_area);
+}
+
 void render_display() { render(buf, &frame_area); }
 
 void display_ram_viewer() {
@@ -456,7 +548,7 @@ void display_ram_viewer() {
 
 		// int offset = tbmon_idx + (line * BYTES_PER_ROW);
 		int offset = tbmon_idx + (line * BYTES_PER_ROW);
-		uint8_t byte_data[1];
+		char byte_data[1];
 
 		sprintf(tbmon_text_buffer[line], "%04x ", offset);
 
@@ -471,7 +563,7 @@ void display_ram_viewer() {
 			strcat(tbmon_text_buffer[line], byte_data);
 		}
 
-		strcat(tbmon_text_buffer[line], '\0');
+		strcat(tbmon_text_buffer[line], "\0");
 
 		print_string(0, line, tbmon_text_buffer[line]);
 	}
@@ -485,7 +577,7 @@ typedef enum { NONE, UP, DOWN, BACK, OK, CANCEL, CANCEL2 } button_state;
 
 button_state read_button_state(void) {
 
-	adc_select_input(2);
+	adc_select_input(0);
 	uint16_t adc = adc_read();
 
 	// print_string(0,3,"                   ", adc);
@@ -561,7 +653,7 @@ void display_loop() {
 
 		while (true) {
 			
-			adc_select_input(2);
+			adc_select_input(0);
 			print_string(0, 1, "ADC:%03x       ", adc_read());
 			sleep_ms(10);
 		}
@@ -588,16 +680,57 @@ void display_loop() {
 
 		if ((cur_disp_mode == OFF) & (tbmon == false)) {
 
-			print_string(0, 0, "L:%04x", low_adr);
-			print_string(0, 1, "H:%04x", high_adr);
+			sprintf(line_buffer1, "ADDR: %04x", m_adr);
+			WriteString(buf, 0, 0*8, line_buffer1);
 
-			print_string(0, 3, "&:%04x", m_adr);
+			sprintf(line_buffer2, "RDAT: %02x WDAT:%02x", mem_r_op, mem_w_op);
+			WriteString(buf, 0, 1*8, line_buffer2);
 
-			print_string(10, 0, "MR: %02x", mem_r_op);
-			print_string(10, 1, "MW: %02x", mem_w_op);
+			sprintf(line_buffer3, "IDAT: %02x ODAT:%02x", io_r_op, io_w_op);
+			WriteString(buf, 0, 2*8, line_buffer3);
+			
+			sprintf(line_buffer4, "USTAT: %08b", serial_status_1);
+			WriteString(buf, 0, 5*8, line_buffer4);
 
-			print_string(10, 2, "IOR:%02x", io_r_op);
-			print_string(10, 3, "IOW:%02x", io_w_op);
+			sprintf(line_buffer5, "UDATA: %s", rx_buffer);
+			WriteString(buf, 0, 6*8, line_buffer5);
+
+			
+			
+			render(buf, &frame_area);
+			
+			
+//			
+//			print_string(0, 0, "L:%04x", low_adr);
+//			print_string(0, 1, "H:%04x", high_adr);
+//
+//			print_string(0, 2, "A:%04x", m_adr);
+//
+//			print_string(0, 4, "MR: %02x", mem_r_op);
+//			print_string(0, 5, "MW: %02x", mem_w_op);
+//
+//			print_string(0, 6, "IOR:%02x", io_r_op);
+//			print_string(0, 7, "IOW:%02x", io_w_op);
+
+//			if (mreq_status){
+//				plot_pixel(125, 2);
+//			}
+//			else{
+//				unplot_pixel(125, 2);
+//			}
+//			
+//			if (iorq_status){
+//				plot_pixel(127, 2);
+//			}
+//			else{
+//				unplot_pixel(127, 2);
+//			}
+
+//			print_string(7, 4, "UART STAT");
+//			print_string(7, 5, "$%08b", serial_status_1);
+//
+//			print_string(7, 6, "UART DATA");
+//			print_string(7, 7, "$%s", rx_buffer);
 		}
 
 		//
@@ -702,10 +835,10 @@ void display_loop() {
 				if (cur_disp_mode == OFF) {
 					tbmon = true;
 					wait_for_button_release();
-					print_string(0, 0, "*    TB-MON    *");
-					print_string(0, 1, "*     v 0.1    *");
-					print_string(0, 2, "*    TurBoos   *");
-					print_string(0, 3, "*     2025     *");
+					print_string(0, 2, "*    TB-MON    *");
+					print_string(0, 3, "*     v 0.1    *");
+					print_string(0, 4, "*    TurBoos   *");
+					print_string(0, 5, "*     2025     *");
 
 				}
 
@@ -761,14 +894,17 @@ void display_loop() {
 	}
 }
 
+
 int sd_read_init() {
+
+	uart_puts(UART_ID, "Read SD START\r\n");
 
 	FRESULT fr;
 	FATFS fs;
 	FIL fil;
 
 	int ret;
-	char filename[] = "Z80NEO.INI";
+	TCHAR filename[] = "Z80NEO.INI";
 	char buf[FILE_BUFF_SIZE];
 	bool skip = false;
 
@@ -776,41 +912,63 @@ int sd_read_init() {
 
 	// Initialize SD card
 	if (!spi_configured) {
-		print_string(0, 0, "INI - INIT");
+		print_string(3, 0, "SPI ERROR");
+		uart_puts(UART_ID, "SPI ERROR\r\n");
 		sleep_ms(DISPLAY_DELAY_LONG);
 		skip = true;
 	}
 
+	char tmp_buf[10] = "";
+	
+	
 	// Mount drive
 	if (!skip) {
 
-		fr = f_mount(&fs, "", 1);
-
+		fr = f_mount(&fs, "0", 0);
+		
 		if (FR_OK != fr) {
-			print_string(0, 0, "INI - MOUNT");
+			print_string(3, 0, "MOUNT - ERROR");
+			uart_puts(UART_ID, "MOUNT - ERROR\r\n");
 			sleep_ms(DISPLAY_DELAY_LONG);
 			skip = true;
 		}
-	}
-
-	// Open file for reading
-	if (!skip) {
-		fr = f_open(&fil, filename, FA_READ);
-		if (fr != FR_OK) {
-			print_string(0, 0, "INI - OPEN");
-			skip = true;
+		else{
+			uart_puts(UART_ID, "MOUNT - OK\r\n");
 		}
 	}
 
-	// Z80.INI:
-	// Z80))
+
+	
+	
+	// Open file for reading
+	if (!skip) {
+		fr = f_open(&fil, filename, FA_READ);
+
+		sprintf(tmp_buf, "ERR:%d\0", fr);
+
+		print_string(0, 3, tmp_buf);
+
+		if (fr != FR_OK) {
+			print_string(0, 0, "OPEN - ERROR");
+			uart_puts(UART_ID, "OPEN - ERROR\r\n");
+			skip = true;
+			while (true)
+				;
+		}
+		else{
+			uart_puts(UART_ID, "OPEN - OK\r\n");
+		}
+	}
+
+	// Z80NEO.INI:
+	//
+	// Z80
 	// F00
 	// D80
 	// C00
 	// 800
 	// 500
 	// 200
-
 	// COUNTER1.HEX
 	// COUNTER2.HEX
 	// COUNTER3.HEX
@@ -819,6 +977,7 @@ int sd_read_init() {
 
 	while (!skip) {
 
+		
 		if (!f_gets(MACHINE, sizeof(MACHINE), &fil)) {
 			show_error(0, 0, "INI - MACHINE");
 			skip = true;
@@ -950,10 +1109,13 @@ int sd_read_init() {
 	fr = f_close(&fil);
 	if (fr != FR_OK) {
 		show_error(0, 0, "INI - CLOSE");
+		while (true)
+			;
 	}
 
 	// Unmount drive
 	f_unmount("0:");
+	
 }
 
 //
@@ -963,7 +1125,7 @@ int sd_read_init() {
 static FRESULT fr;
 static FATFS fs;
 static FIL fil;
-static char cwdbuf[FF_LFN_BUF] = {{0}};
+static char cwdbuf[FF_LFN_BUF] = {0};
 
 void show_error_and_halt(char *err) {
 	clear_screen();
@@ -1241,6 +1403,8 @@ int create_name() {
 
 void load_file(bool quiet) {
 
+	reset_hold();
+
 	FRESULT fr;
 	FATFS fs;
 	FIL fil;
@@ -1481,6 +1645,8 @@ void load_file(bool quiet) {
 	//
 	//
 
+	reset_release();
+
 	return;
 }
 
@@ -1592,7 +1758,7 @@ void load_init_progs(void) {
 void save() {
 
 	// 0800
-	// 000 - 7FFF
+	// 0000 - 7FFF
 
 	for (uint32_t b = 0; b < RAM_SIZE; b++) {
 //		uint32_t i = ((b & 0b00000000000000000000000000100000) ? 1 : 0) << 0x5 |
@@ -1611,6 +1777,7 @@ void save() {
 	}
 
 	clear_screen();
+
 	int aborted = create_name();
 
 	if (aborted == -1) {
@@ -1711,10 +1878,19 @@ void show_logo(void) {
 
 	clear_screen();
 
-	print_string(center_string("Z80NEO"), 0, "Z80NEO");
-	print_string(0, 1, VERSION);
-	print_string(center_string(MACHINE), 2, MACHINE);
-	print_string(0, 3, " TurBoss  2025 ");
+	render(logo, &frame_area);
+}
+
+void boot_screen(void) {
+
+	clear_screen();
+
+	print_string(center_string("~~~~~~~~~~~~~~"), 0, "~~~~~~~~~~~~~~");
+	print_string(center_string("Z80NEO"), 2, "Z80NEO");
+	print_string(center_string(VERSION), 3, VERSION);
+	print_string(center_string(MACHINE), 4, MACHINE);
+	print_string(center_string("TURBOSS - 2025"), 5, "TURBOSS - 2025");
+	print_string(center_string("~~~~~~~~~~~~~~"), 7, "~~~~~~~~~~~~~~");
 }
 
 void show_info(void) {
@@ -1722,8 +1898,8 @@ void show_info(void) {
 	clear_screen();
 
 	print_string(0, 0, "%s", BANK_PROG[cur_bank]);
-	print_string(0, 1, "BANK:%d SIZE:%04x", MAX_BANKS, RAM_SIZE);
-	print_string(0, 2, "TYPE:%s", MACHINE);
+	print_string(0, 1, "BANKS:%d SIZE:%04x", MAX_BANKS, RAM_SIZE);
+	print_string(0, 2, "CPU:%s", MACHINE);
 	print_string(0, 3, "BANK:%d", cur_bank);
 }
 
@@ -1732,12 +1908,12 @@ void show_info(void) {
 //
 
 void reset_release(void) {
-	// gpio_set_dir(RESET_OUT, GPIO_IN);
+	 gpio_set_dir(RESET_OUT, GPIO_IN);
 }
 
 void reset_hold(void) {
-	//	gpio_set_dir(RESET_OUT, GPIO_OUT);
-	//	gpio_put(RESET_OUT, 0);
+	gpio_set_dir(RESET_OUT, GPIO_OUT);
+	gpio_put(RESET_OUT, 0);
 }
 
 //
@@ -1750,9 +1926,8 @@ void reset_hold(void) {
 void set_bus_dir(int direction) {
 	
 	// BUS GPIO 0 <--> 8
-	int pin = 0;
 
-	for (pin = BUS_GPIO_START; pin < BUS_GPIO_END; pin++) {
+	for (int pin = BUS_GPIO_START; pin <= BUS_GPIO_END; pin++) {
 		if (direction) {
 			gpio_set_dir(pin, GPIO_OUT);
 		}
@@ -1765,6 +1940,8 @@ void set_bus_dir(int direction) {
 
 
 //
+//
+//
 
 
 void nop_delay() {
@@ -1775,6 +1952,40 @@ void nop_delay() {
 }
 
 
+
+
+
+// Function to add a character to the circular buffer
+void on_uart_rx() {
+	
+    char rx_char = uart_getc(UART_ID);
+	
+    if (rx_char != '\0') { // Only add non-null characters
+        rx_buffer[rx_index] = rx_char;
+        rx_index = (rx_index + 1) % BUFFER_SIZE;
+        rx_count++;
+        rx_data_available = true;
+    }
+}
+
+
+// Function to read a character from the buffer
+char read_uart_char() {
+	
+    if (rx_count > 0) {
+        char ch = rx_buffer[rx_index];
+        rx_index = (rx_index + 1) % BUFFER_SIZE;
+        rx_count--;
+        // rx_data_available = false; // Reset when a character is read
+        return ch;
+    } else {
+        rx_data_available = false;
+        return '\0';
+    }
+}
+
+
+// char tx_buff[2] = "\0\0";
 
 bool mreq = true;
 bool iorq = true;
@@ -1792,204 +2003,219 @@ void bus_callback(uint pin, uint32_t events) {
 
 	if (pin == IORQ_INPUT) {
 
-		// Read low address
 
-		// DIR 1
-		gpio_put(DIR1_OUT, 0);
-		gpio_put(DIR2_OUT, 1);
-		gpio_put(DIR3_OUT, 1);
-
-
-		// SELECT 1
-		gpio_put(SEL1_OUT, 0);
-		gpio_put(SEL2_OUT, 1);
-		gpio_put(SEL3_OUT, 1);
-
-
-		sleep_us(INST_DELAY);
+		iorq_status = true;
 		
-		// GPIO BUS direction IN
-		set_bus_dir(0);
-		
-
-		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
-
-
-		// Read high address
-
-		// DIR 2
-		gpio_put(DIR1_OUT, 1);
-		gpio_put(DIR2_OUT, 0);
-		gpio_put(DIR3_OUT, 1);
-		
-		// SELECT 2
-		gpio_put(SEL1_OUT, 1);
-		gpio_put(SEL2_OUT, 0);
-		gpio_put(SEL3_OUT, 1);
-
-
-		sleep_us(INST_DELAY);
-
-
-		// GPIO BUS direction IN
-		set_bus_dir(0);
-		
-		high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)	<< 8; // A8 - A15
-
-
-		m_adr = low_adr | high_adr;
-		
-
 		wr = gpio_get(WR_INPUT);
 		rd = gpio_get(RD_INPUT);
+		
+		if (!wr){
+
+			// Read low address
+	
+			// DIR 1
+			gpio_put(DIR1_OUT, 0);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
 	
 	
-		if (!wr) {
+			// SELECT 1
+			gpio_put(SEL1_OUT, 0);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
 	
+	
+			sleep_us(INST_DELAY);
+			
+			// GPIO BUS direction IN
+			set_bus_dir(0);
+			
+	
+			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
+	
+
+			// Read high address
+	
+			// DIR 2
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 0);
+			gpio_put(DIR3_OUT, 1);
+			
+			// SELECT 2
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 0);
+			gpio_put(SEL3_OUT, 1);
+	
+	
+			sleep_us(INST_DELAY);
+	
+	
+			// GPIO BUS direction IN
+			set_bus_dir(0);
+			
+			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)	<< 8; // A8 - A15
+	
+	
+			m_adr = low_adr | high_adr;
+		
+	
+			wr = gpio_get(WR_INPUT);
+			rd = gpio_get(RD_INPUT);
+		
+	
+			// Device write from CPU to device
+			if (!wr) {
+		
+				
+				if (low_adr == SERIAL_PORT_1) {
+	
+					// UART TX
+					
+					// DIR 2
+					gpio_put(DIR1_OUT, 1);
+					gpio_put(DIR2_OUT, 1);
+					gpio_put(DIR3_OUT, 0);
+					
+					// SELECT 2
+					gpio_put(SEL1_OUT, 1);
+					gpio_put(SEL2_OUT, 1);
+					gpio_put(SEL3_OUT, 0);
+	
+	
+				    gpio_set_dir_masked(bus_mask, bus_mask);
+				    
+					sleep_us(INST_DELAY);  // 3
+	
+	
+					// GPIO BUS direction IN
+					set_bus_dir(0);
+					
+					io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
+	
+					
+					// tx_buff = decode_hex(io_w_op);
+	//				sprintf(tx_buff, "%c\0", io_w_op);
+	//				uart_puts(UART_ID, tx_buff);
+					
+					uart_putc(UART_ID, io_w_op);
+					
+	
+					// rx_data_available = false;
+					// tud_cdc_n_write(1, tx_buffer, 1);
+					// tud_cdc_n_write_flush(1);
+					
+					//io_w_op = 0;
+				}
+			}
+		}
+		// Device read from CPU
+		else if (!rd) {
+			// Read low address
+
+			// DIR 1
+			gpio_put(DIR1_OUT, 0);
+			gpio_put(DIR2_OUT, 1);
+			gpio_put(DIR3_OUT, 1);
+
+
+			// SELECT 1
+			gpio_put(SEL1_OUT, 0);
+			gpio_put(SEL2_OUT, 1);
+			gpio_put(SEL3_OUT, 1);
+
+
+			sleep_us(INST_DELAY);
+			
+			// GPIO BUS direction IN
+			set_bus_dir(0);
+			
+
+			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
+
+			sleep_us(INST_DELAY);
+			
 			if (low_adr == SERIAL_PORT_1) {
 
-				// DIR 2
+				// UART RX
+				
+				// DIR 3
 				gpio_put(DIR1_OUT, 1);
 				gpio_put(DIR2_OUT, 1);
-				gpio_put(DIR3_OUT, 0);
-				
-				// SELECT 2
+				gpio_put(DIR3_OUT, 1);
+
+				// SLECT 3
 				gpio_put(SEL1_OUT, 1);
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 0);
 
 
 			    gpio_set_dir_masked(bus_mask, bus_mask);
-			    
-				sleep_us(INST_DELAY);  // 3
 
+				io_r_op = read_uart_char();
 
-				// GPIO BUS direction IN
-				set_bus_dir(0);
+				uart_putc(UART_ID, io_r_op);  // Debug
 				
-				io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
-
-				sprintf(tx_buffer, "%c", io_w_op);
 				
-				tud_cdc_n_write(0, tx_buffer, 1);
-		        tud_cdc_n_write_flush(0);
+				// GPIO BUS direction OUT
+			    set_bus_dir(1);
+
+			    gpio_set_dir_masked(bus_mask, bus_mask);
+			    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
+
+				sleep_us(INST_DELAY);
+
+				// io_r_op = 0;
+			}
+			
+			else if (low_adr == SERIAL_STATUS_1) {
+
+				// serial_status |= 0x01; // Data Received (RX Ready)
+
+				// DIR 3
+				gpio_put(DIR1_OUT, 1);
+				gpio_put(DIR2_OUT, 1);
+				gpio_put(DIR3_OUT, 1);
+
+				// SLECT 3
+				gpio_put(SEL1_OUT, 1);
+				gpio_put(SEL2_OUT, 1);
+				gpio_put(SEL3_OUT, 0);
+
+
+			    gpio_set_dir_masked(bus_mask, bus_mask);
+
+
+				// uart_putc(UART_ID, serial_status_1);  // Debug
+
+				io_r_op = serial_status_1;
+
+
+				// GPIO BUS direction OUT
+			    set_bus_dir(1);
+
+			    gpio_set_dir_masked(bus_mask, bus_mask);
+			    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
+
+				sleep_us(INST_DELAY);
+				
+				// io_r_op = 0;
 			}
 		}
-		// Device read
-		else if (!rd) {
-
-			if (low_adr == SERIAL_PORT_1) {
-			    
-			    if (rx_data_available) {
-
-					// printf("GOT DATA: %s\0\r\n", read_buffer);
-
-					// DIR 3
-					gpio_put(DIR1_OUT, 1);
-					gpio_put(DIR2_OUT, 1);
-					gpio_put(DIR3_OUT, 1);
-
-					// SLECT 3
-					gpio_put(SEL1_OUT, 1);
-					gpio_put(SEL2_OUT, 1);
-					gpio_put(SEL3_OUT, 0);
 
 
-				    gpio_set_dir_masked(bus_mask, bus_mask);
-				    
-					
-			        io_r_op = rx_buffer[rx_head];
-				
-					// GPIO BUS direction OUT
-				    set_bus_dir(1);
-				    
-				    gpio_set_dir_masked(bus_mask, bus_mask);
-				    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
 
-					sleep_us(INST_DELAY);
-				    
-			        rx_head++;
-			        
-			        if (rx_head > CFG_TUD_CDC_RX_BUFSIZE){
-						rx_head = 0;
-						rx_data_available = false;
-					}
-			        else if (rx_head >= rx_tail-1) {
-						rx_head = 0;
-						rx_tail = 0;
-						rx_data_available = false;
-					}				        
-			    }
-			}
-				
-			if (low_adr == SERIAL_STATUS_1) {
-			    
-			    if (rx_data_available) {
+		// DIR OFF
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
 
-					// DIR 3
-					gpio_put(DIR1_OUT, 1);
-					gpio_put(DIR2_OUT, 1);
-					gpio_put(DIR3_OUT, 1);
-
-					// SLECT 3
-					gpio_put(SEL1_OUT, 1);
-					gpio_put(SEL2_OUT, 1);
-					gpio_put(SEL3_OUT, 0);
+		// SELECT OFF
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
 
 
-				    gpio_set_dir_masked(bus_mask, bus_mask);
-				    
-					
-				    io_r_op = 0x01;
-
-					// GPIO BUS direction OUT
-				    set_bus_dir(1);
-				    
-				    gpio_set_dir_masked(bus_mask, bus_mask);
-				    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
-
-					sleep_us(INST_DELAY);
-				}
-				else{ 
-
-					// DIR 3
-					gpio_put(DIR1_OUT, 1);
-					gpio_put(DIR2_OUT, 1);
-					gpio_put(DIR3_OUT, 0);
-
-					// SLECT 3
-					gpio_put(SEL1_OUT, 1);
-					gpio_put(SEL2_OUT, 1);
-					gpio_put(SEL3_OUT, 0);
-
-
-					gpio_set_dir_masked(bus_mask, bus_mask);
-
-
-					io_r_op = 0x00;
-
-					// GPIO BUS direction OUT
-					set_bus_dir(1);
-
-					gpio_set_dir_masked(bus_mask, bus_mask);
-					gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
-
-					sleep_us(INST_DELAY);
-				}
-			}			
-
-
-			
-			// DIR OFF
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-			
-			// SELECT OFF
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-		}
+		iorq_status = false;
 	}
 
 	//
@@ -1999,7 +2225,7 @@ void bus_callback(uint pin, uint32_t events) {
 	else if (pin == MREQ_INPUT) {
 
 		// Memory read
-
+		mreq_status = true;
 
 		rd = gpio_get(RD_INPUT);
 
@@ -2023,7 +2249,7 @@ void bus_callback(uint pin, uint32_t events) {
 
 			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
 
-
+						
 			// DIR OFF
 			gpio_put(DIR1_OUT, 1);
 			gpio_put(DIR2_OUT, 1);
@@ -2035,82 +2261,87 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL3_OUT, 1);
 
 
-		    // gpio_set_dir_masked(bus_mask, 0);
+			rd = gpio_get(RD_INPUT);
 
-			// DIR 2 ON
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 0);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT 2
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 0);
-			gpio_put(SEL3_OUT, 1);
-
-			
-			sleep_us(INST_DELAY);   // 2
-			
+			if (!rd) {
+			    // gpio_set_dir_masked(bus_mask, 0);
 	
-			set_bus_dir(0);
+				// DIR 2 ON
+				gpio_put(DIR1_OUT, 1);
+				gpio_put(DIR2_OUT, 0);
+				gpio_put(DIR3_OUT, 1);
 	
-			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
-
-
-			// DIR OFF
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-			
-			// SELECT OFF
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-			
-
-			gpio_set_dir_masked(bus_mask, 0);
-			
-			m_adr = low_adr | high_adr;
-			
+				// SELECT 2
+				gpio_put(SEL1_OUT, 1);
+				gpio_put(SEL2_OUT, 0);
+				gpio_put(SEL3_OUT, 1);
+	
+	
+				sleep_us(INST_DELAY);   // 2
+	
 		
+				set_bus_dir(0);
 	
-			// DIR 3
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-			
-			// SLECT 3
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 0);
-			
-
-			mem_r_op = ram[cur_bank][m_adr];
-			
+				high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
 	
-			set_bus_dir(1);
-			
-			gpio_set_dir_masked(bus_mask, bus_mask);
-			gpio_put_masked(bus_mask, (mem_r_op << BUS_GPIO_START));
-
-
-
-			sleep_us(INST_DELAY);  // 3
-
-			
-			// DIR OFF
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-			
-			// SELECT OFF
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-		
-			
-			gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
-			gpio_set_dir_masked(bus_mask, 0);
-			
+	
+				// DIR OFF
+				gpio_put(DIR1_OUT, 1);
+				gpio_put(DIR2_OUT, 1);
+				gpio_put(DIR3_OUT, 1);
+	
+				// SELECT OFF
+				gpio_put(SEL1_OUT, 1);
+				gpio_put(SEL2_OUT, 1);
+				gpio_put(SEL3_OUT, 1);
+	
+	
+				gpio_set_dir_masked(bus_mask, 0);
+	
+				m_adr = low_adr | high_adr;
+				rd = gpio_get(RD_INPUT);
+	
+				if (!rd) {
+					// DIR 3
+					gpio_put(DIR1_OUT, 1);
+					gpio_put(DIR2_OUT, 1);
+					gpio_put(DIR3_OUT, 1);
+	
+					// SLECT 3
+					gpio_put(SEL1_OUT, 1);
+					gpio_put(SEL2_OUT, 1);
+					gpio_put(SEL3_OUT, 0);
+	
+	
+					mem_r_op = ram[cur_bank][m_adr];
+	
+	
+					set_bus_dir(1);
+	
+					gpio_set_dir_masked(bus_mask, bus_mask);
+					gpio_put_masked(bus_mask, (mem_r_op << BUS_GPIO_START));
+	
+	
+	
+					sleep_us(INST_DELAY);  // 35
+	
+					// mem_r_op = 0;
+	
+					// DIR OFF
+					gpio_put(DIR1_OUT, 1);
+					gpio_put(DIR2_OUT, 1);
+					gpio_put(DIR3_OUT, 1);
+	
+					// SELECT OFF
+					gpio_put(SEL1_OUT, 1);
+					gpio_put(SEL2_OUT, 1);
+					gpio_put(SEL3_OUT, 1);
+				
+	
+					gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
+					gpio_set_dir_masked(bus_mask, 0);
+				}
+			}
 		}
 		
 
@@ -2158,7 +2389,7 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL2_OUT, 0);
 			gpio_put(SEL3_OUT, 1);
 			
-			sleep_us(INST_DELAY);   // 2
+			// sleep_us(INST_DELAY);   // 2
 			
 	
 			set_bus_dir(0);
@@ -2210,111 +2441,92 @@ void bus_callback(uint pin, uint32_t events) {
 				ram[cur_bank][m_adr] = mem_w_op;
 	
 				gpio_set_dir_masked(bus_mask, 0);
+				// mem_w_op = 0;
 			}
 		}
+
+		mreq_status = false;
 	}
 }
 
 
-
 //
 //
 //
 
-
-void custom_cdc_task(void)
-{
-    // polling CDC interfaces if wanted
-
-    // Check if CDC interface 0 (for pico sdk stdio) is connected and ready
-
-    if (tud_cdc_n_connected(0)) {
-        // print on CDC 0 some debug message
-        // printf("Connected to CDC 0\n");
-        // sleep_ms(5000); // wait for 5 seconds
-    }
-}
-
-
-
-// callback when data is received on a CDC interface
-void tud_cdc_rx_cb(uint8_t itf)
-{
-	rx_head = 0;
-    // allocate buffer for the data in the stack
-    
-
-
-    // printf("RX CDC %d\n", itf);
+void uart_status_handler(void) {
+	if (rx_data_available){
+		serial_status_1 = setBit(serial_status_1, 2);
+	}
+	else {
+		serial_status_1 = clearBit(serial_status_1, 2);
+	}
 	
-	// read the available data 
-    // | IMPORTANT: also do this for CDC0 because otherwise
-    // | you won't be able to print anymore to CDC0
-    // | next time this function is called
-    uint32_t count = tud_cdc_n_read(itf, rx_buffer, sizeof(rx_buffer));
-
-    // check if the data was received on the second cdc interface
-    
-    if (itf == 1) {
-        // process the received data
-        rx_buffer[count] = 0; // null-terminate the string
-		rx_tail = count;
-        
-        // now echo data back to the console on CDC 0
-        printf("RX1: %s %d \n", rx_buffer, count);
-
-        // and echo back OK on CDC 1
-        // tud_cdc_n_write(itf, (uint8_t const *) "OK\r\n", 4);
-        // tud_cdc_n_write_flush(itf);
-
-		rx_data_available = true;
-    }
-    
-    else {
-
-        rx_buffer[count] = 0;
-		rx_tail = count;
-
-		strcpy(read_buffer, rx_buffer);
-
-		// printf("RX0: %s %d \n", rx_buffer, count);
-
-        rx_data_available = true;
-
+	if (uart_is_writable(UART_ID)) {
+		serial_status_1 = setBit(serial_status_1, 1);
+	}
+	else {
+		serial_status_1 = clearBit(serial_status_1, 1);
 	}
 }
-
-
-
 
 
 
 static uint8_t display_buf[SSD1306_BUF_LEN];
 
-bool previous_ce = false;
-bool previous_we = false;
-
 
 int main() {
 
-//	vreg_set_voltage(VREG_VOLTAGE_1_30);
-//	sleep_ms(1);
-//	set_sys_clock_khz(300 * KHZ, true);
 
+
+	// Uart
+	uart_init(UART_ID, BAUD_RATE);
+	
 	// USB
-    board_init();
-    tusb_init();
+	// usb_cdc_init();
 
-
-    // TinyUSB board init callback after init
-    if (board_init_after_tusb) {
-        board_init_after_tusb();
-    }
-    
-
+	// PICO
 	stdio_init_all();
 
+	sleep_ms(500);
 
+	// useful information for picotool
+	bi_decl(bi_2pins_with_func(PICO_I2C_SDA_PIN, PICO_I2C_SCL_PIN, GPIO_FUNC_I2C));
+	bi_decl(bi_program_description("z80neo firmware"));
+
+	// I2C_1 SCREEN 
+	i2c_init(PICO_I2C_INSTANCE, SSD1306_I2C_CLK * 1000);
+	gpio_set_function(PICO_I2C_SDA_PIN, GPIO_FUNC_I2C);
+	gpio_set_function(PICO_I2C_SCL_PIN, GPIO_FUNC_I2C);
+	gpio_pull_up(PICO_I2C_SDA_PIN);
+	gpio_pull_up(PICO_I2C_SCL_PIN);
+	
+	// STATUS LED
+	gpio_init(LED_PIN);
+	gpio_set_dir(LED_PIN, GPIO_OUT);
+	
+    // Uart GPIO Init
+//	gpio_set_function(UART_TX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_TX_PIN));
+//	gpio_set_function(UART_RX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_RX_PIN));
+	gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+	gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
+
+	// Uart
+	uart_init(UART_ID, BAUD_RATE);
+	
+	int __unused actual = uart_set_baudrate(UART_ID, BAUD_RATE);               // Set BAUDRATE
+	uart_set_hw_flow(UART_ID, false, false);                                   // Set UART flow control CTS/RTS
+	uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);                    // Set data format
+	uart_set_fifo_enabled(UART_ID, false);                                     // Turn off FIFO's
+	
+	uart_status_handler();													   // Check UART status
+	
+	uart_puts(UART_ID, "\r\n\r\nz80neo\r\n");
+	uart_puts(UART_ID, "Boot init\r\n");
+
+
+	uart_puts(UART_ID, "Configure CPU clock\r\n");
 	// Configure GPIO PIN for PWM
 	gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PWM);
 	uint slice_num = pwm_gpio_to_slice_num(GPIO_PWM_SIG);
@@ -2325,11 +2537,8 @@ int main() {
 
 	// Target a reasonable wrap value for good resolution
 	uint32_t target_wrap = PWM_WRAP;
-
-	float frequency_hz = 8000.0f;  // 8 Khz
-
-	float system_clock = clock_get_hz(clk_sys);
-
+	float frequency_hz = 8000.0f;  // 8000.0f = 8 Khz (yes :)
+	float system_clock = clock_get_hz(clk_sys);  // 150Mhz default pico 2 clock speed
 
 	// Calculate required clock divider
 	float clock_divider = system_clock / (frequency_hz * (target_wrap + 1));
@@ -2346,75 +2555,99 @@ int main() {
 	    if (target_wrap > 65535) target_wrap = 65535;
 	}
 
-	int duty_cycle = target_wrap * 0.51;  // Start at 10% duty cycle as said in manual
+	int duty_cycle = target_wrap * 0.50;  // 0.50 == 50% duty cycle
 
 	//configure pwm 
 	pwm_config config = pwm_get_default_config();
-	// pwm_config_set_clkdiv(&config, 64.0f);
+
 	pwm_config_set_clkdiv(&config, clock_divider);
 	pwm_config_set_wrap(&config, target_wrap);
 	pwm_init(slice_num, &config, true);	
 
 
+	uart_puts(UART_ID, "Initialize SD card\r\n");
+	
 	// SD 
-
+	
 	pico_fatfs_spi_config_t fs_config = {
-		spi0, // if unmatched SPI pin assignments with spi0/spi1 or explicitly
+		spi1, // if unmatched SPI pin assignments with spi0/spi1 or explicitly
 			  // designated as NULL, SPI PIO will be configured
-		CLK_SLOW_DEFAULT, CLK_FAST_DEFAULT,
+		CLK_SLOW_DEFAULT,
+		CLK_FAST_DEFAULT,
 		PIN_SPI1_MISO,	 // SPIx_RX
-		PIN_SPI1_SCK,	 // SPIx_CS
-		PIN_SPI1_CS,	 // SPIx_SCK
+		PIN_SPI1_CS,     // SPIx_CS
+		PIN_SPI1_SCK,    // SPIx_SCK
 		PIN_SPI1_MOSI,	 // SPIx_TX
 		true // use internal pullup
 	};
 
-
 	spi_configured = pico_fatfs_set_config(&fs_config);
 
 
-	gpio_init(LED_PIN);
-	gpio_set_dir(LED_PIN, GPIO_OUT);
+	if (!spi_configured){
+		while (true) {
+			gpio_put(LED_PIN, 1);
+			sleep_ms(150);
+			gpio_put(LED_PIN, 0);
+			sleep_ms(100);
+
+		}
+	}
+
 
 	//
 	//
 	//
 
-	//	gpio_init(RESET_OUT);
-	//	gpio_set_function(RESET_OUT, GPIO_FUNC_SIO);
-	//
-	//	reset_hold();
+	gpio_init(RESET_OUT);
+	gpio_set_function(RESET_OUT, GPIO_FUNC_SIO);
+
+	reset_hold();
 
 	//
-	//
+	// INIT ADC KEYS
 	//
 
+	uart_puts(UART_ID, "Init Keys\r\n");
 	adc_init();
 	adc_gpio_init(ADC_KEYS_INPUT);
 
 	//
-	//
+	// INIT SCREEN
 	//
 
-	ssd1306_setup();
-
+	uart_puts(UART_ID, "Init Display\r\n\r\n");
+	SSD1306_init();
+	
+	
 	calc_render_area_buflen(&frame_area);
 	
 	// zero the entire display
 	memset(display_buf, 0, SSD1306_BUF_LEN);
 	render(display_buf, &frame_area);
 
-
+	// show logo
 	show_logo();
 
 
 	sleep_ms(DISPLAY_DELAY_LONG);
 	sleep_ms(DISPLAY_DELAY_LONG);
 
+
+	// boot info
+	boot_screen();
+
+	sleep_ms(DISPLAY_DELAY_LONG);
+	sleep_ms(DISPLAY_DELAY_LONG);
+
+	sleep_ms(DISPLAY_DELAY_LONG);
+	sleep_ms(DISPLAY_DELAY_LONG);
+
 	//
 	//
 	//
 
+	uart_puts(UART_ID, "Clear banks\r\n");
 	cur_bank = 0;
 
 	for (uint8_t pgm = 0; pgm < MAX_BANKS; pgm++) {
@@ -2426,26 +2659,30 @@ int main() {
 	//
 
 	clear_screen();
-	WriteString(buf, 0, 0, "SD READ");
+	
+	uart_puts(UART_ID, "Read SD Card\r\n");
+	
+	WriteString(buf, 3, 0, "SD READ");
 	render(buf, &frame_area);
-	sleep_ms(DISPLAY_DELAY_SHORT);
+	sleep_ms(DISPLAY_DELAY_LONG);
 
+	
 	sd_read_init();
 
 	clear_screen();
+
+	uart_puts(UART_ID, "LOAD PROGS\r\n");
 	WriteString(buf, 0, 0, "LOAD PROGS");
 	render(buf, &frame_area);
-	sleep_ms(DISPLAY_DELAY_SHORT);
-
+	sleep_ms(DISPLAY_DELAY_LONG);
 
 	load_init_progs();
 
-
 	clear_screen();
 
-	WriteString(buf, 0, 0, "SHOW INFO");
+	WriteString(buf, 3, 0, "SHOW INFO");
 	render(buf, &frame_area);
-	sleep_ms(DISPLAY_DELAY_SHORT);
+	sleep_ms(DISPLAY_DELAY_LONG);
 
 	show_info();
 
@@ -2455,9 +2692,9 @@ int main() {
 	// INIT GPIO
 	//
 
-
-	// BUS GPIO 0 <--> 8
-	for (gpio = BUS_GPIO_START; gpio < BUS_GPIO_END; gpio++) {
+	uart_puts(UART_ID, "Init GPIO pinss\r\n");
+	// BUS GPIO 0 <--> 7
+	for (gpio = BUS_GPIO_START; gpio <= BUS_GPIO_END; gpio++) {
 		bus_mask |= (1 << gpio);
 		gpio_init(gpio);
 		gpio_set_function(gpio, GPIO_FUNC_SIO);
@@ -2516,6 +2753,13 @@ int main() {
 	gpio_set_dir(MREQ_INPUT, GPIO_IN);
 	gpio_set_inover(MREQ_INPUT, GPIO_OVERRIDE_NORMAL);
 	
+	// CPU RD
+
+	gpio_init(RD_INPUT);
+	gpio_set_function(RD_INPUT, GPIO_FUNC_SIO);
+	gpio_set_dir(RD_INPUT, GPIO_IN);
+	gpio_set_inover(RD_INPUT, GPIO_OVERRIDE_NORMAL);
+
 	// CPU IORQ
 
 	gpio_init(IORQ_INPUT);
@@ -2529,13 +2773,6 @@ int main() {
 	gpio_set_function(WR_INPUT, GPIO_FUNC_SIO);
 	gpio_set_dir(WR_INPUT, GPIO_IN);
 	gpio_set_inover(WR_INPUT, GPIO_OVERRIDE_NORMAL);
-	
-	// CPU RD
-
-	gpio_init(RD_INPUT);
-	gpio_set_function(RD_INPUT, GPIO_FUNC_SIO);
-	gpio_set_dir(RD_INPUT, GPIO_IN);
-	gpio_set_inover(RD_INPUT, GPIO_OVERRIDE_NORMAL);
 
 
 	//
@@ -2552,6 +2789,8 @@ int main() {
 	mem_w_op = 0;
 
 
+	uart_puts(UART_ID, "Start Display handler\r\n");
+	
 	multicore_launch_core1(display_loop);
 
 
@@ -2564,47 +2803,56 @@ int main() {
 	//
 	//
 
-
-	read = false;
-	written = false;
-	confirmed = false;
-
 	gpio_set_dir_masked(bus_mask, 0);
 
 	gpio_put(SEL1_OUT, 1);
 	gpio_put(SEL2_OUT, 1);
 	gpio_put(SEL3_OUT, 1);
-
-	// reset_release();
-
-	// gpio_set_irq_enabled_with_callback(21, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+	
+	
+	
+	// MREQ and IORQ signal handlers
 	
 	gpio_set_irq_enabled_with_callback(MREQ_INPUT, GPIO_IRQ_EDGE_FALL, true, &bus_callback);
-	gpio_set_irq_enabled_with_callback(IORQ_INPUT, GPIO_IRQ_EDGE_FALL, true, &bus_callback);
-	
-	//	gpio_set_irq_enabled(RD_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
-	// 	gpio_set_irq_enabled(WR_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
+	gpio_set_irq_enabled(IORQ_INPUT, GPIO_IRQ_EDGE_FALL, true);
 
+	// Uart0 RX IRQ
+	
+	int UART_IRQ = UART_ID == uart0 ? UART0_IRQ : UART1_IRQ;                   // Set up a RX interrupt
+	irq_set_exclusive_handler(UART_IRQ, on_uart_rx);                           // Enable UART to send interrupts - RX only
+	irq_set_enabled(UART_IRQ, true);
+	uart_set_irq_enables(UART_ID, true, false);                                // Enable RX interrupt, disable TX interrupt
 
 	// Enable CPU clock
 
 	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
 
+	uart_puts(UART_ID, "Start CPU clock\r\n");
+
+	reset_release();
+
+	uart_puts(UART_ID, "\r\nSystem UP!\r\n");
 
 	while (true) {
 
 		if (disabled) {
 			gpio_put(LED_PIN, 1);
+			pwm_set_chan_level(slice_num, channel_num, 0);
 			confirmed = true;
+			
 			while (disabled) {
 			};
+			
+			pwm_set_chan_level(slice_num, channel_num, duty_cycle);
 			gpio_put(LED_PIN, 0);
 		}
 
-		tud_task();
+
+		uart_status_handler();
 		
-		// custom tasks
-		custom_cdc_task();
+		tight_loop_contents();
+		
+		// cdc_task();
 
 	}
 }

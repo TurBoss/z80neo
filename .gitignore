@@ -11,3 +11,6 @@ firmware/z80neo/build/
 *.hex
 *.bin
 *.o
+.pydevproject
+hardware/gerber/
+hardware/main-backups

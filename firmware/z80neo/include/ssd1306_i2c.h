@@ -7,8 +7,8 @@
 #undef PICO_DEFAULT_I2C_SDA_PIN
 #undef PICO_DEFAULT_I2C_SCL_PIN
 
-#define PICO_DEFAULT_I2C_SDA_PIN 20
-#define PICO_DEFAULT_I2C_SCL_PIN 21
+#define PICO_DEFAULT_I2C_SDA_PIN 2
+#define PICO_DEFAULT_I2C_SCL_PIN 3
 
 /* Example code to talk to an SSD1306-based OLED display
 
@@ -31,18 +31,21 @@
    GND (pin 38)  -> GND on display board
  */
 
+ 
+ 
+ 
 // Define the size of the display we have attached. This can vary, make sure you
 // have the right size defined or the output will look rather odd!
 // Code has been tested on 128x32 and 128x64 OLED displays
-#define SSD1306_HEIGHT              32
+#define SSD1306_HEIGHT              64
 #define SSD1306_WIDTH               128
 
 #define SSD1306_I2C_ADDR            _u(0x3C)
 
 // 400 is usual, but often these can be overclocked to improve display response.
 // Tested at 1000 on both 32 and 84 pixel height devices and it worked.
-#define SSD1306_I2C_CLK             400
-//#define SSD1306_I2C_CLK             1000
+// #define SSD1306_I2C_CLK             400
+#define SSD1306_I2C_CLK             1000
 
 
 // commands (see datasheet)

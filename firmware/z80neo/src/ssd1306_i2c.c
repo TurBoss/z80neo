@@ -13,10 +13,14 @@
 #include <pico/binary_info.h>
 #include <hardware/i2c.h>
 
-#include "raspberry26x32.h"
 #include "ssd1306_font.h"
 #include "ssd1306_i2c.h"
 
+
+#define PICO_I2C_INSTANCE i2c1
+
+#define PICO_I2C_SDA_PIN 2
+#define PICO_I2C_SCL_PIN 3
 
 
 
@@ -25,14 +29,12 @@ void calc_render_area_buflen(struct render_area *area) {
     area->buflen = (area->end_col - area->start_col + 1) * (area->end_page - area->start_page + 1);
 }
 
-#ifdef i2c_default
-
 void SSD1306_send_cmd(uint8_t cmd) {
     // I2C write process expects a control byte followed by data
     // this "data" can be a command or data to follow up a command
     // Co = 1, D/C = 0 => the driver expects a command
     uint8_t display_buf[2] = {0x80, cmd};
-    i2c_write_blocking(i2c_default, SSD1306_I2C_ADDR, display_buf, 2, false);
+    i2c_write_blocking(PICO_I2C_INSTANCE, SSD1306_I2C_ADDR, display_buf, 2, false);
 }
 
 void SSD1306_send_cmd_list(uint8_t *display_buf, int num) {
@@ -53,7 +55,7 @@ void SSD1306_send_buf(uint8_t display_buf[], int buflen) {
     temp_buf[0] = 0x40;
     memcpy(temp_buf+1, display_buf, buflen);
 
-    i2c_write_blocking(i2c_default, SSD1306_I2C_ADDR, temp_buf, buflen + 1, false);
+    i2c_write_blocking(PICO_I2C_INSTANCE, SSD1306_I2C_ADDR, temp_buf, buflen + 1, false);
 
     free(temp_buf);
 }
@@ -163,6 +165,7 @@ void SetPixel(uint8_t *display_buf, int x,int y, bool on) {
 
     display_buf[byte_idx] = byte;
 }
+
 // Basic Bresenhams.
 void DrawLine(uint8_t *display_buf, int x0, int y0, int x1, int y1, bool on) {
 
@@ -254,20 +257,10 @@ void WriteString(uint8_t *display_buf, int16_t x, int16_t y, char *str) {
 
 
 
-#endif
-
-
-
-
-
 int ssd1306_setup() {
-    stdio_init_all();
+    // stdio_init_all(); // done in main
 
-    i2c_init(i2c_default, SSD1306_I2C_CLK * 1000);
-    gpio_set_function(PICO_DEFAULT_I2C_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(PICO_DEFAULT_I2C_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_pull_up(PICO_DEFAULT_I2C_SDA_PIN);
-    gpio_pull_up(PICO_DEFAULT_I2C_SCL_PIN);
+
 
     // run through the complete initialization process
     SSD1306_init();
@@ -281,3 +274,4 @@ int ssd1306_setup() {
     SSD1306_send_cmd(SSD1306_SET_ENTIRE_ON); // go back to following RAM for pixel state
     
 }
+

@@ -4,8 +4,8 @@ add_subdirectory(libs/pico_fatfs)
 
 add_executable(z80neo
 	src/ssd1306_i2c.c
-	src/u8x8_fonts.c
 	src/usb_descriptors.c
+	src/utils.c
 	src/main.c
     )
 
@@ -27,6 +27,7 @@ target_link_libraries(z80neo
 	hardware_spi
 	hardware_pio
 	hardware_dma
+	hardware_uart
 	hardware_irq
 	hardware_resets
 	hardware_pll
@@ -41,11 +42,13 @@ target_link_libraries(z80neo
 # enable USB CDC
 pico_enable_stdio_usb(z80neo 1)
 
+# enable UART
+pico_enable_stdio_uart(z80neo 1)
+
 pico_add_extra_outputs(z80neo)
 
 # create map/bin/hex file etc.
 pico_add_extra_outputs(z80neo)
-
 
 # add url via pico_set_program_url
 example_auto_set_url(z80neo)
