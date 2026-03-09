@@ -1,3 +1,7 @@
+//
+// Z80NEO Firmware
+// TurBoss 2026
+
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -5,25 +9,22 @@
 #include <stdlib.h>
 #include <string.h>
 
-
 // Pico 2
+#include <pico/binary_info.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
 #include <pico/time.h>
-#include <pico/binary_info.h>
-
 
 // Pico hardware
 #include <hardware/adc.h>
 #include <hardware/clocks.h>
 #include <hardware/gpio.h>
+#include <hardware/i2c.h>
+#include <hardware/irq.h>
 #include <hardware/pwm.h>
 #include <hardware/spi.h>
-#include <hardware/vreg.h>
 #include <hardware/uart.h>
-#include <hardware/irq.h>
-#include <hardware/i2c.h>
-
+#include <hardware/vreg.h>
 
 // SD Card
 #include "ff.h"
@@ -35,24 +36,18 @@
 // USB Serial
 // #include "cdc.h"
 
-
 // Screen
 #include "ssd1306_i2c.h"
 
 // Boot logo
 #include "logo.h"
 
-
-
-
 // Uart
-#define UART_ID         uart0
-#define BAUD_RATE       115200
-#define DATA_BITS       8
-#define STOP_BITS       1
-#define PARITY          UART_PARITY_NONE
-
-
+#define UART_ID uart0
+#define BAUD_RATE 115200
+#define DATA_BITS 8
+#define STOP_BITS 1
+#define PARITY UART_PARITY_NONE
 
 #undef CLK_SLOW_DEFAULT
 #undef CLK_FAST_DEFAULT
@@ -60,20 +55,23 @@
 #define CLK_SLOW_DEFAULT (100 * KHZ)
 #define CLK_FAST_DEFAULT (10 * MHZ)
 
+// MMU
+#define MMU_PAGE_0 0xF0
+#define MMU_PAGE_1 0xF1
+#define MMU_PAGE_2 0xF2
+#define MMU_PAGE_3 0xF3
+
 // SIO
-#define SERIAL_PORT_1	0x80
-#define SERIAL_STATUS_1	0x81
+#define SERIAL_PORT_1 0x80
+#define SERIAL_STATUS_1 0x81
 
-#define SERIAL_PORT_2	0x90
-#define SERIAL_STATUS_2	0x91
-
+#define SERIAL_PORT_2 0x90
+#define SERIAL_STATUS_2 0x91
 
 // CLK
-#define PWM_WRAP 65535    // 16-bit resolution
+#define PWM_WRAP 65535 // 16-bit resolution
 
-
-
-#define INST_DELAY 10 // 45
+#define INST_DELAY 45 // 45
 
 // uart RX things
 bool rx_data_available = false;
@@ -84,13 +82,10 @@ char rx_buffer[8];
 uint8_t rx_count = 0;
 uint8_t rx_index = 0;
 
-
-
 // PWM CLK slice
 uint slice;
 
 bool spi_configured;
-
 
 struct render_area frame_area = {
 	start_col : 0,
@@ -107,7 +102,7 @@ const bool PRE_ALLOCATE = true;
 const bool SKIP_FIRST_LATENCY = true;
 
 // Size of read/write.
-#define BUF_SIZE 1024
+#define BUF_SIZE 8192
 
 // File size in MB where MB = 1,000,000 bytes.
 const uint32_t FILE_SIZE_MB = 5;
@@ -117,7 +112,6 @@ const uint8_t WRITE_COUNT = 2;
 
 // Read pass count.
 const uint8_t READ_COUNT = 2;
-
 
 //==============================================================================
 // End of configuration constants.
@@ -140,16 +134,12 @@ uint8_t *disp_buf_5 = (uint8_t *)buf32;
 uint8_t *disp_buf_6 = (uint8_t *)buf32;
 uint8_t *disp_buf_7 = (uint8_t *)buf32;
 
-
-
 bool mreq_status = false;
 bool iorq_status = false;
 
 //
 // function definitions
 //
-
-
 
 void show_logo(void);
 void show_info(void);
@@ -172,41 +162,41 @@ void save();
 //
 //
 
-#define VERSION "v0.6.2 - ALPHA"
+#define VERSION "v0.6.3 - ALPHA"
 
 //
-// ADC Configuration (Z80.INI file!)
+// ADC Configuration (Z80NEO.INI file!)
 //
 
 #define FILE_LENGTH 17
-#define FILE_BUFF_SIZE 12
+#define FILE_BUFF_SIZE 1024
 #define FILE_EXT "*.HEX"
 
 //
 //
 //
 
-#define RAM_SIZE 32768
-#define SD_RAM_SIZE 32768
+#define RAM_SIZE 16384
+#define SD_RAM_SIZE 16384
 
 //
 //
 //
 
-#define DEBUG_LOAD false
+#define DEBUG_LOAD true
 #define ADC_DEBUG_DELAY 100
 
 volatile bool DEBUG_ADC = false;
 
 char MACHINE[FILE_LENGTH] = "Z80 CPU";
-char BANK_PROG[8][FILE_LENGTH];
+char BANK_PROG[4][FILE_LENGTH];
 
 volatile uint16_t CANCEL2_ADC = 0xFFF;
-volatile uint16_t CANCEL_ADC =  0xBFF;
-volatile uint16_t OK_ADC =      0x7FF;
-volatile uint16_t BACK_ADC =    0x5FF;
-volatile uint16_t DOWN_ADC =    0x2FF;
-volatile uint16_t UP_ADC =      0x0FF;
+volatile uint16_t CANCEL_ADC = 0xBFF;
+volatile uint16_t OK_ADC = 0x7FF;
+volatile uint16_t BACK_ADC = 0x5FF;
+volatile uint16_t DOWN_ADC = 0x2FF;
+volatile uint16_t UP_ADC = 0x0FF;
 
 //
 //
@@ -263,47 +253,44 @@ char *screen[LINES] = {line1, line2, line3, line4, line5, line6, line7, line8};
 // DEFINE GPIO
 //
 
-#define UART_TX_PIN     0
-#define UART_RX_PIN     1
+#define UART_TX_PIN 0
+#define UART_RX_PIN 1
 
 #define PICO_I2C_SDA_PIN 2
 #define PICO_I2C_SCL_PIN 3
 
-#define PIN_SPI1_CS     9
-#define PIN_SPI1_SCK    10
-#define PIN_SPI1_MOSI   11
+#define PIN_SPI1_CS 9
+#define PIN_SPI1_SCK 10
+#define PIN_SPI1_MOSI 11
 
-#define BUS_GPIO_START  12
-#define BUS_GPIO_END    19
+#define BUS_GPIO_START 12
+#define BUS_GPIO_END 19
 
-#define MREQ_INPUT      20
-#define RD_INPUT        21
+#define MREQ_INPUT 20
+#define RD_INPUT 21
 
-#define IORQ_INPUT      22
-#define WR_INPUT        23
+#define IORQ_INPUT 22
+#define WR_INPUT 23
 
-#define PIN_SPI1_MISO   24
+#define PIN_SPI1_MISO 24
 
-#define LED_PIN         25
+#define LED_PIN 25
 
-#define SEL1_OUT        26	// ADDRESS LOW
-#define SEL2_OUT        27	// ADDRESS HIGH
-#define SEL3_OUT        28  // DATA
+#define SEL1_OUT 26 // ADDRESS LOW
+#define SEL2_OUT 27 // ADDRESS HIGH
+#define SEL3_OUT 28 // DATA
 
-#define DIR1_OUT        29
-#define DIR2_OUT        30
-#define DIR3_OUT        31
+#define DIR1_OUT 29
+#define DIR2_OUT 30
+#define DIR3_OUT 31
 
-#define GPIO_PWM_SIG    32
+#define GPIO_PWM_SIG 32
 
-#define RESET_OUT       33
+#define RESET_OUT 33
 
-#define ADC_KEYS_INPUT  40  // ADC KEYS
-
-
+#define ADC_KEYS_INPUT 40 // ADC KEYS
 
 #define PICO_I2C_INSTANCE i2c1
-
 
 //
 //
@@ -314,7 +301,7 @@ char *screen[LINES] = {line1, line2, line3, line4, line5, line6, line7, line8};
 static uint8_t cur_bank = 0;
 
 uint8_t ram[MAX_BANKS][(uint32_t)RAM_SIZE] = {};
-uint8_t sdram[(uint32_t)SD_RAM_SIZE] = {};
+uint8_t sdram[MAX_BANKS][(uint32_t)SD_RAM_SIZE] = {};
 
 uint16_t tbmon_idx = 0;
 
@@ -330,15 +317,13 @@ volatile bool read = false;
 volatile bool written = false;
 volatile bool confirmed = false;
 
-
 uint8_t in_bytes[1024];
-
 
 uint32_t bus_mask = 0;
 uint32_t gpio = 0;
 
 uint8_t low_adr = 0x00;
-uint16_t high_adr = 0x00;
+uint8_t high_adr = 0x01;
 
 uint16_t m_adr = 0x00;
 
@@ -355,6 +340,14 @@ uint32_t dr_op = 0;
 uint32_t dw_op = 0;
 
 
+
+int center_string(char *string) {
+	int n = strlen(string);
+	int l = 8 - (n / 2);
+	return l < 0 ? 0 : l;
+}
+
+
 unsigned char decode_hex(char c) {
 	if (c >= 65 && c <= 70)
 		return c - 65 + 10;
@@ -365,19 +358,6 @@ unsigned char decode_hex(char c) {
 	else
 		return -1;
 }
-
-// unused
-unsigned char reverse_bits(unsigned char b) {
-	return (b & 0b00000001) << 3 |
-	       (b & 0b00000010) << 1 |
-		   (b & 0b00000100) >> 1 |
-		   (b & 0b00001000) >> 3 |
-		   (b & 0b00010000) << 3 |
-		   (b & 0b00100000) << 1 |
-		   (b & 0b01000000) >> 1 |
-		   (b & 0b10000000) >> 3;
-}
-
 
 void clear_bank(uint8_t bank) {
 	for (uint32_t adr = 0; adr < RAM_SIZE; adr++) {
@@ -392,9 +372,9 @@ void clear_bank(uint8_t bank) {
 
 void clear_screen() {
 	memset(buf, 0, SSD1306_BUF_LEN);
-	
+
 	render(buf, &frame_area);
-	
+
 	memset(line1, 0, TEXT_BUFFER_SIZE);
 	memset(line2, 0, TEXT_BUFFER_SIZE);
 	memset(line3, 0, TEXT_BUFFER_SIZE);
@@ -407,7 +387,7 @@ void clear_screen() {
 
 void clear_screen0() {
 	memset(buf, 0, SSD1306_BUF_LEN);
-	
+
 	memset(line1, 0, TEXT_BUFFER_SIZE);
 	memset(line2, 0, TEXT_BUFFER_SIZE);
 	memset(line3, 0, TEXT_BUFFER_SIZE);
@@ -475,13 +455,13 @@ void print_line(int x, char *text, ...) {
 	va_start(args, text);
 	vsnprintf(text_buffer, TEXT_BUFFER_SIZE, text, args);
 	char *screen0 = screen[0];
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < 7; i++) {
 		screen[i] = screen[i + 1];
 		WriteString(buf, x * 8, i * 8, screen[i]);
 	}
-	screen[3] = screen0;
-	strcpy(screen[3], text_buffer);
-	WriteString(buf, x * 8, 3 * 8, text_buffer);
+	screen[7] = screen0;
+	strcpy(screen[7], text_buffer);
+	WriteString(buf, x * 8, 7 * 8, text_buffer);
 	render(buf, &frame_area);
 	va_end(args);
 }
@@ -555,9 +535,9 @@ void display_ram_viewer() {
 		for (int col = 0; col < BYTES_PER_ROW; col++) {
 
 			if (col < 3) {
-				sprintf(byte_data, "%02x:", sdram[offset + col]);
+				sprintf(byte_data, "%02x:", sdram[cur_bank][offset + col]);
 			} else {
-				sprintf(byte_data, "%02x", sdram[offset + col]);
+				sprintf(byte_data, "%02x", sdram[cur_bank][offset + col]);
 			}
 
 			strcat(tbmon_text_buffer[line], byte_data);
@@ -594,9 +574,11 @@ button_state read_button_state(void) {
 		return OK;
 	} else if (adc <= CANCEL_ADC) { // CANCEL 0x8E0
 		return CANCEL;
-//	} else if (adc <= CANCEL2_ADC) { // CANCEL2 0xFFF
-//		return CANCEL2;
-	} else {
+	}
+	// else if (adc <= CANCEL2_ADC) { // CANCEL2 0xFFF
+	//     return CANCEL2;
+	// }
+	else {
 		return NONE;
 	}
 }
@@ -652,7 +634,7 @@ void display_loop() {
 		uint16_t adc = adc_read();
 
 		while (true) {
-			
+
 			adc_select_input(0);
 			print_string(0, 1, "ADC:%03x       ", adc_read());
 			sleep_ms(10);
@@ -680,57 +662,67 @@ void display_loop() {
 
 		if ((cur_disp_mode == OFF) & (tbmon == false)) {
 
-			sprintf(line_buffer1, "ADDR: %04x", m_adr);
-			WriteString(buf, 0, 0*8, line_buffer1);
+
+			sprintf(line_buffer1, "ADDR: #%08x", m_adr);
+			WriteString(buf, 0, 1 * 8, line_buffer1);
+
+			// sprintf(line_buffer1, "ADDR: H:%02x L:%02x", high_adr, low_adr);
+			// WriteString(buf, 0, 1 * 8, line_buffer1);
 
 			sprintf(line_buffer2, "RDAT: %02x WDAT:%02x", mem_r_op, mem_w_op);
-			WriteString(buf, 0, 1*8, line_buffer2);
+			WriteString(buf, 0, 2 * 8, line_buffer2);
 
 			sprintf(line_buffer3, "IDAT: %02x ODAT:%02x", io_r_op, io_w_op);
-			WriteString(buf, 0, 2*8, line_buffer3);
-			
-			sprintf(line_buffer4, "USTAT: %08b", serial_status_1);
-			WriteString(buf, 0, 5*8, line_buffer4);
+			WriteString(buf, 0, 3 * 8, line_buffer3);
 
-			sprintf(line_buffer5, "UDATA: %s", rx_buffer);
-			WriteString(buf, 0, 6*8, line_buffer5);
+			sprintf(line_buffer4, "BANK: #%02d", cur_bank);
+			WriteString(buf, 0, 4 * 8, line_buffer4);
 
-			
-			
+			sprintf(line_buffer5, "USTAT: %08b", serial_status_1);
+			WriteString(buf, 0, 5 * 8, line_buffer5);
+
+			sprintf(line_buffer6, "UDATA: %08b", rx_buffer[0]);
+			WriteString(buf, 0, 6 * 8, line_buffer6);
+
 			render(buf, &frame_area);
-			
-			
-//			
-//			print_string(0, 0, "L:%04x", low_adr);
-//			print_string(0, 1, "H:%04x", high_adr);
-//
-//			print_string(0, 2, "A:%04x", m_adr);
-//
-//			print_string(0, 4, "MR: %02x", mem_r_op);
-//			print_string(0, 5, "MW: %02x", mem_w_op);
-//
-//			print_string(0, 6, "IOR:%02x", io_r_op);
-//			print_string(0, 7, "IOW:%02x", io_w_op);
 
-//			if (mreq_status){
-//				plot_pixel(125, 2);
-//			}
-//			else{
-//				unplot_pixel(125, 2);
-//			}
-//			
-//			if (iorq_status){
-//				plot_pixel(127, 2);
-//			}
-//			else{
-//				unplot_pixel(127, 2);
-//			}
+			//
+			//			print_string(0, 0, "L:%04x", low_adr);
+			//			print_string(0, 1, "H:%04x", high_adr);
+			//
+			//			print_string(0, 2, "A:%04x", m_adr);
+			//
+			//			print_string(0, 4, "MR: %02x", mem_r_op);
+			//			print_string(0, 5, "MW: %02x", mem_w_op);
+			//
+			//			print_string(0, 6, "IOR:%02x", io_r_op);
+			//			print_string(0, 7, "IOW:%02x", io_w_op);
 
-//			print_string(7, 4, "UART STAT");
-//			print_string(7, 5, "$%08b", serial_status_1);
-//
-//			print_string(7, 6, "UART DATA");
-//			print_string(7, 7, "$%s", rx_buffer);
+			//			if (mreq_status) {
+			//				plot_pixel(125, 2);
+			//				plot_pixel(125, 3);
+			//				plot_pixel(125,4);
+			//			} else {
+			//				unplot_pixel(125, 2);
+			//				unplot_pixel(125, 3);
+			//				unplot_pixel(125, 4);
+			//			}
+			//
+			//			if (iorq_status) {
+			//				plot_pixel(127, 2);
+			//				plot_pixel(127, 3);
+			//				plot_pixel(127, 4);
+			//			} else {
+			//				unplot_pixel(127, 2);
+			//				unplot_pixel(127, 3);
+			//				unplot_pixel(127, 4);
+			//			}
+
+			//			print_string(7, 4, "UART STAT");
+			//			print_string(7, 5, "$%08b", serial_status_1);
+			//
+			//			print_string(7, 6, "UART DATA");
+			//			print_string(7, 7, "$%s", rx_buffer);
 		}
 
 		//
@@ -816,7 +808,7 @@ void display_loop() {
 				cur_bank = (cur_bank + 1) % (MAX_BANKS);
 
 				clear_screen();
-				sprintf(text_buffer, "BANK #%1x", cur_bank);
+				sprintf(text_buffer, "BANK #%02d", cur_bank);
 				WriteString(buf, 0, 0, text_buffer);
 				render(buf, &frame_area);
 				sleep_ms(DISPLAY_DELAY);
@@ -844,7 +836,7 @@ void display_loop() {
 
 				else {
 
-					sprintf(text_buffer, "CLEAR BANK #%1x?", cur_bank);
+					sprintf(text_buffer, "CLEAR BANK #%02d?", cur_bank);
 					WriteString(buf, 0, 0, text_buffer);
 					render(buf, &frame_area);
 					wait_for_button_release();
@@ -894,10 +886,7 @@ void display_loop() {
 	}
 }
 
-
 int sd_read_init() {
-
-	uart_puts(UART_ID, "Read SD START\r\n");
 
 	FRESULT fr;
 	FATFS fs;
@@ -919,44 +908,37 @@ int sd_read_init() {
 	}
 
 	char tmp_buf[10] = "";
-	
-	
+
 	// Mount drive
 	if (!skip) {
 
 		fr = f_mount(&fs, "0", 0);
-		
+
 		if (FR_OK != fr) {
 			print_string(3, 0, "MOUNT - ERROR");
-			uart_puts(UART_ID, "MOUNT - ERROR\r\n");
+			uart_puts(UART_ID, "Mount error\r\n");
 			sleep_ms(DISPLAY_DELAY_LONG);
 			skip = true;
-		}
-		else{
-			uart_puts(UART_ID, "MOUNT - OK\r\n");
+		} else {
+			uart_puts(UART_ID, "Mount ok\r\n");
 		}
 	}
 
-
-	
-	
 	// Open file for reading
 	if (!skip) {
 		fr = f_open(&fil, filename, FA_READ);
 
-		sprintf(tmp_buf, "ERR:%d\0", fr);
-
-		print_string(0, 3, tmp_buf);
+		// sprintf(tmp_buf, "ERR:%d\0", fr);
+		// print_string(0, 3, tmp_buf);
 
 		if (fr != FR_OK) {
 			print_string(0, 0, "OPEN - ERROR");
-			uart_puts(UART_ID, "OPEN - ERROR\r\n");
+			uart_puts(UART_ID, "Open error\r\n");
 			skip = true;
 			while (true)
 				;
-		}
-		else{
-			uart_puts(UART_ID, "OPEN - OK\r\n");
+		} else {
+			uart_puts(UART_ID, "Open ok\r\n");
 		}
 	}
 
@@ -977,7 +959,6 @@ int sd_read_init() {
 
 	while (!skip) {
 
-		
 		if (!f_gets(MACHINE, sizeof(MACHINE), &fil)) {
 			show_error(0, 0, "INI - MACHINE");
 			skip = true;
@@ -1054,6 +1035,8 @@ int sd_read_init() {
 		//
 		//
 
+		// ----------- PROG1
+
 		if (!f_gets(BANK_PROG[0], sizeof(BANK_PROG[0]), &fil)) {
 			show_error(0, 0, "INI - PROG1");
 			skip = true;
@@ -1061,6 +1044,8 @@ int sd_read_init() {
 		}
 		print_line(0, "P1: %12s", BANK_PROG[0]);
 		sleep_ms(DISPLAY_DELAY_SHORT);
+
+		// ----------- PROG2
 
 		if (!f_gets(BANK_PROG[1], sizeof(BANK_PROG[1]), &fil)) {
 			show_error(0, 0, "INI - PROG2");
@@ -1070,21 +1055,26 @@ int sd_read_init() {
 		print_line(0, "P2: %12s", BANK_PROG[1]);
 		sleep_ms(DISPLAY_DELAY_SHORT);
 
+		// ----------- PROG3
+
 		if (!f_gets(BANK_PROG[2], sizeof(BANK_PROG[2]), &fil)) {
 			show_error(0, 0, "INI - PROG3");
 			skip = true;
 			break;
 		}
-		print_line(0, "P3:%12s", BANK_PROG[2]);
+		print_line(0, "P3: %12s", BANK_PROG[2]);
 		sleep_ms(DISPLAY_DELAY_SHORT);
 
+		// ----------- PROG4
+
 		if (!f_gets(BANK_PROG[3], sizeof(BANK_PROG[3]), &fil)) {
-			show_error(0, 0, "INI - PROG 4");
+			show_error(0, 0, "INI - PROG4");
 			skip = true;
 			break;
 		}
 		print_line(0, "P4: %12s", BANK_PROG[3]);
 		sleep_ms(DISPLAY_DELAY_SHORT);
+
 
 		break;
 	}
@@ -1115,7 +1105,6 @@ int sd_read_init() {
 
 	// Unmount drive
 	f_unmount("0:");
-	
 }
 
 //
@@ -1138,6 +1127,7 @@ void show_error(int b, int a, char *err) {
 
 	clear_screen();
 	print_string(a, b, err);
+	sleep_ms(DISPLAY_DELAY_LONG);
 	sleep_ms(DISPLAY_DELAY_LONG);
 	return;
 }
@@ -1398,9 +1388,8 @@ int create_name() {
 }
 
 //
-// Load file
+// Load Intel HEX file only
 //
-
 void load_file(bool quiet) {
 
 	reset_hold();
@@ -1408,13 +1397,21 @@ void load_file(bool quiet) {
 	FRESULT fr;
 	FATFS fs;
 	FIL fil;
-	int ret;
 	char buf[FILE_BUFF_SIZE];
 	char const *p_dir;
 
+
+	// clear all banks on load for now
+	cur_bank = 0;
+
+	for (uint8_t pgm = 0; pgm < MAX_BANKS; pgm++) {
+		clear_bank(pgm);
+	}
+
+
 	if (!quiet) {
 		clear_screen();
-		print_string(0, 0, "Loading");
+		print_string(0, 0, "Loading HEX");
 		print_string(0, 1, file);
 		sleep_ms(DISPLAY_DELAY_SHORT);
 	}
@@ -1432,224 +1429,287 @@ void load_file(bool quiet) {
 		return;
 	}
 
-	bool readingComment = false;
-	bool readingOrigin = false;
+	// Intel HEX parsing variables
+	uint8_t intel_checksum = 0;
+	uint8_t intel_byte_count = 0;
+	uint16_t intel_address = 0;
+	uint8_t intel_address_h = 0;
+	uint8_t intel_address_l = 0;
+	uint8_t intel_record_type = 0;
+	uint32_t intel_extended_address = 0; // For 32-bit addressing
+	uint32_t intel_absolute_address = 0; // Computed absolute address
 
-	//
-	//
-	//
+	// Parser state machine
+	uint8_t parser_state =
+		0; // 0=waiting for ':', 1=reading byte count, 2=reading address high,
+		   // 3=reading address low, 4=reading record type, 5=reading data,
+		   // 6=reading checksum
+	uint8_t hex_digit = 0;
+	uint8_t current_byte = 0;
+	uint8_t data_index = 0;
+	uint8_t data_buffer[16][256];
 
-	uint32_t pc = 0;
-	byte val = 0;
-	int count = 0;
 	int line = 0;
+	uint32_t bytes_loaded = 0;
 
-	//
-	//
-	//
-	
-	if (DEBUG_LOAD){		
-		print_string(0, 0, "OFFSET:");
-		print_string(0, 2, "DATA:  ");
+	if (DEBUG_LOAD) {
+
+		clear_screen();
+
+		print_string(center_string("--HEX LOADER--"), 0, "--HEX LOADER--");
+		print_string(0, 2, "ADDR:          ");
+		print_string(0, 3, "BANK:          ");
+		print_string(0, 4, "DATA:          ");
+		print_string(0, 5, "LINE:          ");
 	}
-	
-	while (true) {
 
+	while (true) {
 		memset(&buf, 0, sizeof(buf));
+
 		if (!f_gets(buf, sizeof(buf), &fil))
 			break;
 
-		//line++;
-
 		int i = 0;
 
-		while (true) {
+		// Skip empty lines
+		if (buf[0] == '\0' || buf[0] == '\r' || buf[0] == '\n')
+			continue;
 
+		// Check for Intel HEX start character
+		if (buf[0] != ':') {
+
+			sprintf(text_buffer, "Not HEX Line: %d Data: %016x", line, buf);
+			uart_puts(UART_ID, text_buffer);
+			clear_screen();
+			fr = f_close(&fil);
+			return;
+		}
+
+		// Reset parser for new line
+		parser_state = 1; // Start parsing after ':'
+		intel_byte_count = 0;
+		intel_address = 0;
+		intel_address_h = 0;
+		intel_address_l = 0;
+		intel_record_type = 0;
+		intel_checksum = 0;
+		hex_digit = 0;
+		current_byte = 0;
+		data_index = 0;
+
+		cur_bank = 0;
+
+		i = 1; // Skip the ':'
+
+		while (true) {
 			byte b = buf[i++];
 
-			if (!b)
+			if (!b || b == '\n' || b == '\r')
 				break;
 
-			if (b == '\n' || b == '\r') {
-				readingComment = false;
-				readingOrigin = false;
-			} else if (b == '#') {
-				readingComment = true;
-			} else if (b == '@') {
-				readingOrigin = true;
-			} else if (b == ':') {
-				readingOrigin = true;
+			// Skip whitespace
+			if (b == ' ' || b == '\t')
+				continue;
+
+			int decoded = decode_hex(b);
+
+			if (decoded == -1) {
+				sprintf(text_buffer, "Invalid HEX: Line %05d", line);
+				uart_puts(UART_ID, text_buffer);
+				clear_screen();
+				fr = f_close(&fil);
+				return;
 			}
 
-			if (!readingComment && b != '\r' && b != '\n' && b != '\t' &&
-				b != ' ' && b != '@' && b != ':') {
+			// Process hex digits (two per byte)
+			if (hex_digit == 0) {
+				current_byte = decoded * 16;
+				hex_digit = 1;
+			} else {
+				current_byte += decoded;
+				hex_digit = 0;
 
-				int decoded = decode_hex(b);
+				// Add to checksum (all bytes except checksum)
+				if (parser_state < 6) {
+					intel_checksum += current_byte;
+				}
 
-				if (decoded == -1) {
+				// Process based on parser state
+				switch (parser_state) {
+				case 1: // Byte count
+					intel_byte_count = current_byte;
+					parser_state = 2;
+					break;
 
-					sprintf(text_buffer, "ERR LINE %05d", line);
-					show_error_wait_for_button(text_buffer);
-					clear_screen();
-					fr = f_close(&fil);
-					return;
+				case 2: // Address high byte
+					cur_bank = (current_byte & 0b11000000) >> 6;  // bank change
+					intel_address = current_byte << 8;
+					parser_state = 3;
+					break;
+
+				case 3: // Address low byte
+					intel_address |= current_byte;
+					parser_state = 4;
+					break;
+
+				case 4: // Record type
+					intel_record_type = current_byte;
+					if (intel_byte_count == 0) {
+						parser_state = 6; // Skip to checksum if no data
+					} else {
+						parser_state = 5;
+						data_index = 0;
+					}
+					break;
+
+				case 5: // Data bytes
+					data_buffer[cur_bank][data_index++] = current_byte;
+					if (data_index >= intel_byte_count) {
+						parser_state = 6;
+					}
+					break;
+
+				case 6: // Checksum
+					// Verify checksum (sum including checksum should be 0)
+					if ((intel_checksum + current_byte) & 0xFF) {
+						sprintf(text_buffer, "Checksum err Line %05d", line);
+						uart_puts(UART_ID, text_buffer);
+						clear_screen();
+						fr = f_close(&fil);
+						return;
+					}
+
+					// Process the record based on type
+					switch (intel_record_type) {
+					case 0: // Data record
+						// Calculate absolute address with extended addressing
+						intel_absolute_address =
+							intel_extended_address + intel_address;
+
+						// Optional: Apply offset if needed (uncomment if
+						// required) if (intel_absolute_address >= 0x1800) {
+						//     intel_absolute_address -= 0x1800;
+						// }
+
+						// Write data to memory
+						for (int j = 0; j < intel_byte_count; j++) {
+							sdram[cur_bank][intel_absolute_address + j] = data_buffer[cur_bank][j];
+							bytes_loaded++;
+
+							if (DEBUG_LOAD && j < 4) { // Show first few bytes
+								sprintf(text_buffer, "%02X", data_buffer[cur_bank][j]);
+								print_string(7 + (j * 2), 4, text_buffer);
+							}
+						}
+
+						if (DEBUG_LOAD) {
+							sprintf(text_buffer, "%08lX", intel_absolute_address);
+							print_string(7, 2, text_buffer);
+
+							sprintf(text_buffer, "%08lX", cur_bank);
+							print_string(7, 3, text_buffer);
+
+							sprintf(text_buffer, "%08d", line);
+							print_string(7, 5, text_buffer);
+							sleep_ms(5);
+						}
+						break;
+
+					case 1: // End of file record
+						if (DEBUG_LOAD) {
+							print_string(0, 5, "EOF reached      ");
+						}
+						break;
+
+					case 2: // Extended segment address
+						if (intel_byte_count == 2) {
+							// Segment address * 16
+							intel_extended_address =
+								(data_buffer[cur_bank][0] << 8 | data_buffer[cur_bank][1]) * 16;
+							if (DEBUG_LOAD) {
+								sprintf(text_buffer, "SegAddr: %08lX",
+										intel_extended_address);
+								print_string(0, 5, text_buffer);
+							}
+						}
+						break;
+
+					case 3: // Start segment address (for 8086)
+						// Not typically used - ignore
+						break;
+
+					case 4: // Extended linear address
+						if (intel_byte_count == 2) {
+							// Upper 16 bits of 32-bit address
+							intel_extended_address =
+								(data_buffer[cur_bank][0] << 8 | data_buffer[cur_bank][1]) << 16;
+							if (DEBUG_LOAD) {
+								sprintf(text_buffer, "LinAddr: %08lX",
+										intel_extended_address);
+								print_string(0, 5, text_buffer);
+							}
+						}
+						break;
+
+					case 5: // Start linear address (for 80386+)
+						// Not typically used - ignore
+						break;
+
+					default:
+						sprintf(text_buffer, "Unknown type %02X",
+								intel_record_type);
+						print_string(0, 5, text_buffer);
+						break;
+					}
+
+					// Record processed, exit loop for this line
+					parser_state = 0;
+					break;
 				}
-				
-				
-				if (!readingOrigin) {	
-					
-					
-					if (DEBUG_LOAD){
-						print_string(8, 3, "  ");
-					}
-					
-					switch (count) {
-						
-						case 0:
-							val = decoded * 16;
-						
-							if (DEBUG_LOAD){
-								sprintf(text_buffer, "%02x", val);
-								print_string(8, 3, text_buffer);
-							}
-							
-							count = 1;
-							break;
-						case 1:
-							val += decoded;
-						
-						
-							if (DEBUG_LOAD){
-								sprintf(text_buffer, "%02x", val);
-								print_string(8, 3, text_buffer);
-							}
-							count = 0;
-							sdram[pc++] = val;
-							break;
-					}
-					
-				} else {
-					if (DEBUG_LOAD){
-					    print_string(8, 3, "        ");
-					}
-					
-					switch (count) {
-						
-						case 0:
-							pc = decoded * 16 * 16 * 16;
-						
-							if (DEBUG_LOAD){
-						
-								sprintf(text_buffer, "%8x", pc);
-								print_string(6, 1, text_buffer);
-							}
-							count = 1;
-							break;
-						case 1:
-							pc += decoded * 16 * 16;
-						
-							if (DEBUG_LOAD){
-						
-								sprintf(text_buffer, "%8x", pc);
-								print_string(6, 1, text_buffer);
-							}
-							count = 2;
-							break;
-						case 2:
-							pc += decoded * 16;
-						
-							if (DEBUG_LOAD){
-						
-								sprintf(text_buffer, "%8x", pc);
-								print_string(6, 1, text_buffer);
-							}
-							count = 3;
-							break;
-						case 3:
-							pc += decoded;
-						
-							if (DEBUG_LOAD){
-								sprintf(text_buffer, "%8x", pc);
-								print_string(6, 1, text_buffer);
-							}
-							count = 0;
-							readingOrigin = false;
-							
-							pc -= 0x1800;
-							break;
-						default:
-							break;
-					}
-				}
-				if (DEBUG_LOAD){
-			 		sleep_ms(10);
-				}
-			    
 			}
 		}
 		line++;
-	}
 
-	//
-	//
-	//
+		// Check for EOF record to exit early
+		if (intel_record_type == 1) {
+			break;
+		}
+	}
 
 	fr = f_close(&fil);
 
 	if (fr != FR_OK) {
-		show_error(0, 0, "Cant't close file!");
+		show_error(0, 0, "Can't close file!");
 	}
 
 	// Unmount drive
 	f_unmount("0:");
 
-	//
-	//
-	//
-
-	
-	if (DEBUG_LOAD){
- 		sleep_ms(100);
+	if (DEBUG_LOAD) {
+		sprintf(text_buffer, "Loaded %lu bytes", bytes_loaded);
+		print_string(0, 6, text_buffer);
+		sleep_ms(DISPLAY_DELAY_LONG);
 	}
-    
+
 	if (!quiet) {
 		clear_screen();
-		print_string(0, 0, "Loaded: RESET!");
+		sprintf(text_buffer, "Loaded: %lu bytes", bytes_loaded);
+		print_string(0, 0, text_buffer);
 		print_string(0, 1, file);
 		sleep_ms(DISPLAY_DELAY);
 	}
 
 	strcpy(BANK_PROG[cur_bank], file);
 
-	//
-	//
-	//
-
+	// Copy from sdram to bank memory
 	for (uint32_t b = 0; b < RAM_SIZE; b++) {
-//		uint32_t i = ((b & 0b00000000000000000000000000100000) ? 1 : 0) << 0x5 |
-//					 ((b & 0b00000000000000000000000001000000) ? 1 : 0) << 0x0 |
-//					 ((b & 0b00000000000000000000000010000000) ? 1 : 0) << 0x1 |
-//					 ((b & 0b00000000000000000000000100000000) ? 1 : 0) << 0x2 |
-//					 ((b & 0b00000000000000000000001000000000) ? 1 : 0) << 0x3 |
-//					 ((b & 0b00000000000000000000010000000000) ? 1 : 0) << 0x4 |
-//					 ((b & 0b00000000000000000000000000000001) ? 1 : 0) << 0x6 |
-//					 ((b & 0b00000000000000000000000000000010) ? 1 : 0) << 0x7 |
-//					 ((b & 0b00000000000000000000000000000100) ? 1 : 0) << 0x8 |
-//					 ((b & 0b00000000000000000000000000001000) ? 1 : 0) << 0x9 |
-//					 ((b & 0b00000000000000000000000000010000) ? 1 : 0) << 0xA;
-//		ram[cur_bank][b] = sdram[i];
-		ram[cur_bank][b] = sdram[b];
+		ram[cur_bank][b] = sdram[cur_bank][b];
 	}
-
-	//
-	//
-	//
 
 	reset_release();
 
 	return;
 }
-
 
 //
 // PGM 1 - Load from SD Card
@@ -1712,42 +1772,6 @@ void load_init_progs(void) {
 		load_file(true);
 	}
 
-	cur_bank = 4;
-	if (BANK_PROG[4][0] >= 48) {
-		print_string(0, 3, "LOAD PROG 4");
-		sleep_ms(DISPLAY_DELAY);
-		sleep_ms(DISPLAY_DELAY);
-		strcpy(file, BANK_PROG[4]);
-		load_file(true);
-	}
-
-	cur_bank = 5;
-	if (BANK_PROG[5][0] >= 48) {
-		print_string(0, 3, "LOAD PROG 5");
-		sleep_ms(DISPLAY_DELAY);
-		sleep_ms(DISPLAY_DELAY);
-		strcpy(file, BANK_PROG[5]);
-		load_file(true);
-	}
-
-	cur_bank = 6;
-	if (BANK_PROG[6][0] >= 48) {
-		print_string(0, 3, "LOAD PROG 6");
-		sleep_ms(DISPLAY_DELAY);
-		sleep_ms(DISPLAY_DELAY);
-		strcpy(file, BANK_PROG[6]);
-		load_file(true);
-	}
-
-	cur_bank = 7;
-	if (BANK_PROG[7][0] >= 48) {
-		print_string(0, 3, "LOAD PROG 7");
-		sleep_ms(DISPLAY_DELAY);
-		sleep_ms(DISPLAY_DELAY);
-		strcpy(file, BANK_PROG[7]);
-		load_file(true);
-	}
-
 	cur_bank = 0;
 }
 
@@ -1761,19 +1785,29 @@ void save() {
 	// 0000 - 7FFF
 
 	for (uint32_t b = 0; b < RAM_SIZE; b++) {
-//		uint32_t i = ((b & 0b00000000000000000000000000100000) ? 1 : 0) << 0x5 |
-//					 ((b & 0b00000000000000000000000001000000) ? 1 : 0) << 0x0 |
-//					 ((b & 0b00000000000000000000000010000000) ? 1 : 0) << 0x1 |
-//					 ((b & 0b00000000000000000000000100000000) ? 1 : 0) << 0x2 |
-//					 ((b & 0b00000000000000000000001000000000) ? 1 : 0) << 0x3 |
-//					 ((b & 0b00000000000000000000010000000000) ? 1 : 0) << 0x4 |
-//					 ((b & 0b00000000000000000000000000000001) ? 1 : 0) << 0x6 |
-//					 ((b & 0b00000000000000000000000000000010) ? 1 : 0) << 0x7 |
-//					 ((b & 0b00000000000000000000000000000100) ? 1 : 0) << 0x8 |
-//					 ((b & 0b00000000000000000000000000001000) ? 1 : 0) << 0x9 |
-//					 ((b & 0b00000000000000000000000000010000) ? 1 : 0) << 0xA;
-//		sdram[b] = ram[cur_bank][i];
-		sdram[b] = ram[cur_bank][b];
+		//		uint32_t i = ((b & 0b00000000000000000000000000100000) ? 1 : 0)
+		//<< 0x5 |
+		//					 ((b & 0b00000000000000000000000001000000) ? 1 : 0)
+		//<< 0x0 |
+		//					 ((b & 0b00000000000000000000000010000000) ? 1 : 0)
+		//<< 0x1 |
+		//					 ((b & 0b00000000000000000000000100000000) ? 1 : 0)
+		//<< 0x2 |
+		//					 ((b & 0b00000000000000000000001000000000) ? 1 : 0)
+		//<< 0x3 |
+		//					 ((b & 0b00000000000000000000010000000000) ? 1 : 0)
+		//<< 0x4 |
+		//					 ((b & 0b00000000000000000000000000000001) ? 1 : 0)
+		//<< 0x6 |
+		//					 ((b & 0b00000000000000000000000000000010) ? 1 : 0)
+		//<< 0x7 |
+		//					 ((b & 0b00000000000000000000000000000100) ? 1 : 0)
+		//<< 0x8 |
+		//					 ((b & 0b00000000000000000000000000001000) ? 1 : 0)
+		//<< 0x9 |
+		//					 ((b & 0b00000000000000000000000000010000) ? 1 : 0)
+		//<< 0xA; 		sdram[b] = ram[cur_bank][i];
+		sdram[cur_bank][b] = ram[cur_bank][b];
 	}
 
 	clear_screen();
@@ -1832,7 +1866,8 @@ void save() {
 	byte val = 0;
 
 	for (uint32_t pc = 0; pc < RAM_SIZE; pc++) {
-		val = sdram[pc];
+		val = sdram[cur_bank][pc];
+
 		ret = f_printf(&fil, (pc % 16 == 0) ? "\n%02X" : " %02X", val);
 		if (ret < 0) {
 			show_error(0, 0, "WRITE ERROR 2");
@@ -1846,7 +1881,7 @@ void save() {
 	//
 
 	fr = f_close(&fil);
-	
+
 	if (fr != FR_OK) {
 		show_error_wait_for_button("CANT'T CLOSE FILE");
 		clear_screen();
@@ -1868,11 +1903,6 @@ void save() {
 //
 //
 
-int center_string(char *string) {
-	int n = strlen(string);
-	int l = 8 - (n / 2);
-	return l < 0 ? 0 : l;
-}
 
 void show_logo(void) {
 
@@ -1885,12 +1915,12 @@ void boot_screen(void) {
 
 	clear_screen();
 
-	print_string(center_string("~~~~~~~~~~~~~~"), 0, "~~~~~~~~~~~~~~");
+	print_string(center_string("--------------"), 0, "--------------");
 	print_string(center_string("Z80NEO"), 2, "Z80NEO");
 	print_string(center_string(VERSION), 3, VERSION);
 	print_string(center_string(MACHINE), 4, MACHINE);
-	print_string(center_string("TURBOSS - 2025"), 5, "TURBOSS - 2025");
-	print_string(center_string("~~~~~~~~~~~~~~"), 7, "~~~~~~~~~~~~~~");
+	print_string(center_string("TURBOSS - 2026"), 5, "TURBOSS - 2026");
+	print_string(center_string("--------------"), 7, "--------------");
 }
 
 void show_info(void) {
@@ -1907,9 +1937,7 @@ void show_info(void) {
 //
 //
 
-void reset_release(void) {
-	 gpio_set_dir(RESET_OUT, GPIO_IN);
-}
+void reset_release(void) { gpio_set_dir(RESET_OUT, GPIO_IN); }
 
 void reset_hold(void) {
 	gpio_set_dir(RESET_OUT, GPIO_OUT);
@@ -1920,70 +1948,64 @@ void reset_hold(void) {
 //
 //
 
-
-
 // 0 IN, 1 OUT
 void set_bus_dir(int direction) {
-	
+
 	// BUS GPIO 0 <--> 8
 
 	for (int pin = BUS_GPIO_START; pin <= BUS_GPIO_END; pin++) {
 		if (direction) {
 			gpio_set_dir(pin, GPIO_OUT);
-		}
-		else {
+		} else {
 			gpio_set_dir(pin, GPIO_IN);
 		}
 	}
-
 }
 
-
 //
 //
 //
-
 
 void nop_delay() {
 
 	// 125 mhz 3 nops 20 ns
-	asm volatile (" nop\n nop\n nop\n");
-
+	asm volatile(" nop\n nop\n nop\n");
 }
-
-
-
-
 
 // Function to add a character to the circular buffer
 void on_uart_rx() {
-	
-    char rx_char = uart_getc(UART_ID);
-	
-    if (rx_char != '\0') { // Only add non-null characters
-        rx_buffer[rx_index] = rx_char;
-        rx_index = (rx_index + 1) % BUFFER_SIZE;
-        rx_count++;
-        rx_data_available = true;
-    }
-}
 
+	char rx_char = uart_getc(UART_ID);
+
+	rx_buffer[rx_index] = rx_char;
+	// rx_index = (rx_index + 1) % BUFFER_SIZE;
+	rx_index = (rx_index) % BUFFER_SIZE;
+	rx_count++;
+	rx_data_available = true;
+
+	//	if (rx_char != '\0') { // Only add non-null characters
+	//		rx_buffer[rx_index] = rx_char;
+	//		rx_index = (rx_index + 1) % BUFFER_SIZE;
+	//		rx_count++;
+	//		rx_data_available = true;
+	//	}
+}
 
 // Function to read a character from the buffer
 char read_uart_char() {
-	
-    if (rx_count > 0) {
-        char ch = rx_buffer[rx_index];
-        rx_index = (rx_index + 1) % BUFFER_SIZE;
-        rx_count--;
-        // rx_data_available = false; // Reset when a character is read
-        return ch;
-    } else {
-        rx_data_available = false;
-        return '\0';
-    }
-}
 
+	if (rx_count > 0) {
+		char ch = rx_buffer[rx_index];
+		// rx_index = (rx_index +1 ) % BUFFER_SIZE;
+		rx_index = (rx_index) % BUFFER_SIZE;
+		rx_count--;
+		// rx_data_available = false; // Reset when a character is read
+		return ch;
+	} else {
+		rx_data_available = false;
+		return '\0';
+	}
+}
 
 // char tx_buff[2] = "\0\0";
 
@@ -1993,8 +2015,6 @@ bool iorq = true;
 bool rd = true;
 bool wr = true;
 
-
-
 void bus_callback(uint pin, uint32_t events) {
 
 	//
@@ -2003,113 +2023,112 @@ void bus_callback(uint pin, uint32_t events) {
 
 	if (pin == IORQ_INPUT) {
 
-
 		iorq_status = true;
-		
+
 		wr = gpio_get(WR_INPUT);
 		rd = gpio_get(RD_INPUT);
-		
-		if (!wr){
+
+		if (!wr) {
 
 			// Read low address
-	
+
 			// DIR 1
 			gpio_put(DIR1_OUT, 0);
 			gpio_put(DIR2_OUT, 1);
 			gpio_put(DIR3_OUT, 1);
-	
-	
+
 			// SELECT 1
 			gpio_put(SEL1_OUT, 0);
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
-	
-	
+
 			sleep_us(INST_DELAY);
-			
+
 			// GPIO BUS direction IN
 			set_bus_dir(0);
-			
-	
-			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
-	
+
+			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+					   0b11111111); // A0 - A7
 
 			// Read high address
-	
+
 			// DIR 2
 			gpio_put(DIR1_OUT, 1);
 			gpio_put(DIR2_OUT, 0);
 			gpio_put(DIR3_OUT, 1);
-			
+
 			// SELECT 2
 			gpio_put(SEL1_OUT, 1);
 			gpio_put(SEL2_OUT, 0);
 			gpio_put(SEL3_OUT, 1);
-	
-	
+
 			sleep_us(INST_DELAY);
-	
-	
+
 			// GPIO BUS direction IN
 			set_bus_dir(0);
-			
-			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)	<< 8; // A8 - A15
-	
-	
+
+			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
+
 			m_adr = low_adr | high_adr;
-		
-	
+
 			wr = gpio_get(WR_INPUT);
-			rd = gpio_get(RD_INPUT);
-		
-	
-			// Device write from CPU to device
+			// rd = gpio_get(RD_INPUT);
+
+			// Write device from CPU
 			if (!wr) {
-		
-				
-				if (low_adr == SERIAL_PORT_1) {
-	
+			    // MMU
+    			if (low_adr == MMU_PAGE_0) {
+
+    			}
+    			else if (low_adr == MMU_PAGE_1) {
+
+    			}
+    			else if (low_adr == MMU_PAGE_2) {
+
+    			}
+    			else if (low_adr == MMU_PAGE_3) {
+
+    			}
+
+    			else if (low_adr == SERIAL_PORT_1) {
+
 					// UART TX
-					
+
 					// DIR 2
 					gpio_put(DIR1_OUT, 1);
 					gpio_put(DIR2_OUT, 1);
 					gpio_put(DIR3_OUT, 0);
-					
+
 					// SELECT 2
 					gpio_put(SEL1_OUT, 1);
 					gpio_put(SEL2_OUT, 1);
 					gpio_put(SEL3_OUT, 0);
-	
-	
-				    gpio_set_dir_masked(bus_mask, bus_mask);
-				    
-					sleep_us(INST_DELAY);  // 3
-	
-	
+
+					gpio_set_dir_masked(bus_mask, bus_mask);
+
+					sleep_us(INST_DELAY); // 3
+
 					// GPIO BUS direction IN
 					set_bus_dir(0);
-					
-					io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
-	
-					
+
+					io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
 					// tx_buff = decode_hex(io_w_op);
-	//				sprintf(tx_buff, "%c\0", io_w_op);
-	//				uart_puts(UART_ID, tx_buff);
-					
+					//				sprintf(tx_buff, "%c\0", io_w_op);
+					//				uart_puts(UART_ID, tx_buff);
+
 					uart_putc(UART_ID, io_w_op);
-					
-	
+
 					// rx_data_available = false;
 					// tud_cdc_n_write(1, tx_buffer, 1);
 					// tud_cdc_n_write_flush(1);
-					
-					//io_w_op = 0;
+
+					// io_w_op = 0;
 				}
 			}
 		}
 		// Device read from CPU
-		else if (!rd) {
+		else {
 			// Read low address
 
 			// DIR 1
@@ -2117,27 +2136,44 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(DIR2_OUT, 1);
 			gpio_put(DIR3_OUT, 1);
 
-
 			// SELECT 1
 			gpio_put(SEL1_OUT, 0);
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 
-
 			sleep_us(INST_DELAY);
-			
+
 			// GPIO BUS direction IN
 			set_bus_dir(0);
-			
 
-			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
+			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+					   0b11111111); // A0 - A7
+
+			// Read high address
+
+			// DIR 2
+			gpio_put(DIR1_OUT, 1);
+			gpio_put(DIR2_OUT, 0);
+			gpio_put(DIR3_OUT, 1);
+
+			// SELECT 2
+			gpio_put(SEL1_OUT, 1);
+			gpio_put(SEL2_OUT, 0);
+			gpio_put(SEL3_OUT, 1);
 
 			sleep_us(INST_DELAY);
-			
+
+			// GPIO BUS direction IN
+			set_bus_dir(0);
+
+			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
+
+			m_adr = low_adr | high_adr;
+
 			if (low_adr == SERIAL_PORT_1) {
 
 				// UART RX
-				
+
 				// DIR 3
 				gpio_put(DIR1_OUT, 1);
 				gpio_put(DIR2_OUT, 1);
@@ -2148,25 +2184,21 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 0);
 
-
-			    gpio_set_dir_masked(bus_mask, bus_mask);
-
 				io_r_op = read_uart_char();
 
-				uart_putc(UART_ID, io_r_op);  // Debug
-				
-				
-				// GPIO BUS direction OUT
-			    set_bus_dir(1);
+				uart_putc(UART_ID, io_r_op); // Debug
 
-			    gpio_set_dir_masked(bus_mask, bus_mask);
-			    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
+				// GPIO BUS direction OUT
+				set_bus_dir(1);
+
+				gpio_set_dir_masked(bus_mask, bus_mask);
+				gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
 
 				sleep_us(INST_DELAY);
 
 				// io_r_op = 0;
 			}
-			
+
 			else if (low_adr == SERIAL_STATUS_1) {
 
 				// serial_status |= 0x01; // Data Received (RX Ready)
@@ -2181,28 +2213,21 @@ void bus_callback(uint pin, uint32_t events) {
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 0);
 
-
-			    gpio_set_dir_masked(bus_mask, bus_mask);
-
-
 				// uart_putc(UART_ID, serial_status_1);  // Debug
 
 				io_r_op = serial_status_1;
 
-
 				// GPIO BUS direction OUT
-			    set_bus_dir(1);
+				set_bus_dir(1);
 
-			    gpio_set_dir_masked(bus_mask, bus_mask);
-			    gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
+				gpio_set_dir_masked(bus_mask, bus_mask);
+				gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
 
 				sleep_us(INST_DELAY);
-				
+
 				// io_r_op = 0;
 			}
 		}
-
-
 
 		// DIR OFF
 		gpio_put(DIR1_OUT, 1);
@@ -2213,7 +2238,6 @@ void bus_callback(uint pin, uint32_t events) {
 		gpio_put(SEL1_OUT, 1);
 		gpio_put(SEL2_OUT, 1);
 		gpio_put(SEL3_OUT, 1);
-
 
 		iorq_status = false;
 	}
@@ -2244,12 +2268,11 @@ void bus_callback(uint pin, uint32_t events) {
 			// GPIO BUS direction IN
 			set_bus_dir(0);
 
-			sleep_us(INST_DELAY);  // 1
+			sleep_us(INST_DELAY); // 1
 
+			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+					   0b11111111); // A0 - A7
 
-			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
-
-						
 			// DIR OFF
 			gpio_put(DIR1_OUT, 1);
 			gpio_put(DIR2_OUT, 1);
@@ -2260,90 +2283,86 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 
-
 			rd = gpio_get(RD_INPUT);
 
 			if (!rd) {
-			    // gpio_set_dir_masked(bus_mask, 0);
-	
+
+				// gpio_set_dir_masked(bus_mask, 0);
+
 				// DIR 2 ON
 				gpio_put(DIR1_OUT, 1);
 				gpio_put(DIR2_OUT, 0);
 				gpio_put(DIR3_OUT, 1);
-	
+
 				// SELECT 2
 				gpio_put(SEL1_OUT, 1);
 				gpio_put(SEL2_OUT, 0);
 				gpio_put(SEL3_OUT, 1);
-	
-	
-				sleep_us(INST_DELAY);   // 2
-	
-		
+
+				sleep_us(INST_DELAY); // 2
+
 				set_bus_dir(0);
-	
-				high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
-	
-	
+
+				high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+							0b11111111) << 8; // A8 - A15
+
+
 				// DIR OFF
 				gpio_put(DIR1_OUT, 1);
 				gpio_put(DIR2_OUT, 1);
 				gpio_put(DIR3_OUT, 1);
-	
+
 				// SELECT OFF
 				gpio_put(SEL1_OUT, 1);
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 1);
-	
-	
+
 				gpio_set_dir_masked(bus_mask, 0);
-	
+
 				m_adr = low_adr | high_adr;
 				rd = gpio_get(RD_INPUT);
-	
+
 				if (!rd) {
+
+
+					cur_bank = (high_adr & 0b11000000) >> 6;
+
 					// DIR 3
 					gpio_put(DIR1_OUT, 1);
 					gpio_put(DIR2_OUT, 1);
 					gpio_put(DIR3_OUT, 1);
-	
+
 					// SLECT 3
 					gpio_put(SEL1_OUT, 1);
 					gpio_put(SEL2_OUT, 1);
 					gpio_put(SEL3_OUT, 0);
-	
-	
+
 					mem_r_op = ram[cur_bank][m_adr];
-	
-	
+
 					set_bus_dir(1);
-	
+
 					gpio_set_dir_masked(bus_mask, bus_mask);
 					gpio_put_masked(bus_mask, (mem_r_op << BUS_GPIO_START));
-	
-	
-	
-					sleep_us(INST_DELAY);  // 35
-	
+
+					sleep_us(INST_DELAY); // 35
+
 					// mem_r_op = 0;
-	
+
 					// DIR OFF
 					gpio_put(DIR1_OUT, 1);
 					gpio_put(DIR2_OUT, 1);
 					gpio_put(DIR3_OUT, 1);
-	
+
 					// SELECT OFF
 					gpio_put(SEL1_OUT, 1);
 					gpio_put(SEL2_OUT, 1);
 					gpio_put(SEL3_OUT, 1);
-				
-	
+
 					gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
 					gpio_set_dir_masked(bus_mask, 0);
 				}
 			}
 		}
-		
 
 		else {
 
@@ -2360,11 +2379,10 @@ void bus_callback(uint pin, uint32_t events) {
 			// GPIO BUS direction IN
 			set_bus_dir(0);
 
-			sleep_us(INST_DELAY);  // 1
+			sleep_us(INST_DELAY); // 1
 
-
-			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111); // A0 - A7
-
+			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+					   0b11111111); // A0 - A7
 
 			// DIR OFF
 			gpio_put(DIR1_OUT, 1);
@@ -2376,112 +2394,103 @@ void bus_callback(uint pin, uint32_t events) {
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
 
-
 			// gpio_set_dir_masked(bus_mask, 0);
 
-	
 			gpio_put(DIR1_OUT, 1);
 			gpio_put(DIR2_OUT, 0);
 			gpio_put(DIR3_OUT, 1);
-			
+
 			// SELECT 2 ON HIGH ADDRESS
 			gpio_put(SEL1_OUT, 1);
 			gpio_put(SEL2_OUT, 0);
 			gpio_put(SEL3_OUT, 1);
-			
+
 			// sleep_us(INST_DELAY);   // 2
-			
-	
+
 			set_bus_dir(0);
-	
-			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
-	
-	
+
+			high_adr =
+				(((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)
+				<< 8; // A8 - A15
+
 			// DIRECTION OFF
 			gpio_put(DIR1_OUT, 1);
 			gpio_put(DIR2_OUT, 1);
 			gpio_put(DIR3_OUT, 1);
-			
+
 			// SELECT OFF
 			gpio_put(SEL1_OUT, 1);
 			gpio_put(SEL2_OUT, 1);
 			gpio_put(SEL3_OUT, 1);
-	
+
 			m_adr = low_adr | high_adr;
-	
+
 			gpio_set_dir_masked(bus_mask, 0);
-	
+
 			rd = gpio_get(RD_INPUT);
 			wr = gpio_get(WR_INPUT);
-	
+
 			if ((rd) && (!wr)) {
-	
+
+
+				cur_bank = (high_adr & 0b11000000) >> 6;
+
 				// sleep_ms(0);
-				
+
 				// SLECT 3 DATA
 				gpio_put(SEL1_OUT, 1);
 				gpio_put(SEL2_OUT, 1);
 				gpio_put(SEL3_OUT, 0);
-	
+
 				// DIRECTION 3 DATA
 				gpio_put(DIR1_OUT, 1);
 				gpio_put(DIR2_OUT, 1);
 				gpio_put(DIR3_OUT, 0);
-	
-	
-			    gpio_set_dir_masked(bus_mask, bus_mask);
-			    
-				sleep_us(INST_DELAY);  // 3
-	
-	
+
+				gpio_set_dir_masked(bus_mask, bus_mask);
+
+				sleep_us(INST_DELAY); // 3
+
 				set_bus_dir(0);
-				
-				mem_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START ;
-	
+
+				mem_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
 				ram[cur_bank][m_adr] = mem_w_op;
-	
+
 				gpio_set_dir_masked(bus_mask, 0);
 				// mem_w_op = 0;
 			}
 		}
-
 		mreq_status = false;
 	}
 }
-
 
 //
 //
 //
 
 void uart_status_handler(void) {
-	if (rx_data_available){
+
+	if (uart_is_writable(UART_ID)) {
 		serial_status_1 = setBit(serial_status_1, 2);
-	}
-	else {
+	} else {
 		serial_status_1 = clearBit(serial_status_1, 2);
 	}
-	
-	if (uart_is_writable(UART_ID)) {
+
+	if (rx_data_available) {
 		serial_status_1 = setBit(serial_status_1, 1);
-	}
-	else {
+	} else {
 		serial_status_1 = clearBit(serial_status_1, 1);
 	}
 }
 
-
-
 static uint8_t display_buf[SSD1306_BUF_LEN];
-
 
 int main() {
 
-
-
-	// Uart
+	// UART
 	uart_init(UART_ID, BAUD_RATE);
-	
+
 	// USB
 	// usb_cdc_init();
 
@@ -2494,106 +2503,109 @@ int main() {
 	bi_decl(bi_2pins_with_func(PICO_I2C_SDA_PIN, PICO_I2C_SCL_PIN, GPIO_FUNC_I2C));
 	bi_decl(bi_program_description("z80neo firmware"));
 
-	// I2C_1 SCREEN 
+	// I2C_1 SCREEN
 	i2c_init(PICO_I2C_INSTANCE, SSD1306_I2C_CLK * 1000);
 	gpio_set_function(PICO_I2C_SDA_PIN, GPIO_FUNC_I2C);
 	gpio_set_function(PICO_I2C_SCL_PIN, GPIO_FUNC_I2C);
 	gpio_pull_up(PICO_I2C_SDA_PIN);
 	gpio_pull_up(PICO_I2C_SCL_PIN);
-	
+
 	// STATUS LED
 	gpio_init(LED_PIN);
 	gpio_set_dir(LED_PIN, GPIO_OUT);
-	
-    // Uart GPIO Init
-//	gpio_set_function(UART_TX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_TX_PIN));
-//	gpio_set_function(UART_RX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_RX_PIN));
+
+	// Uart GPIO Init
+	//	gpio_set_function(UART_TX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_TX_PIN));
+	//	gpio_set_function(UART_RX_PIN, UART_FUNCSEL_NUM(UART_ID, UART_RX_PIN));
 	gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
 	gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
 
-
 	// Uart
 	uart_init(UART_ID, BAUD_RATE);
-	
-	int __unused actual = uart_set_baudrate(UART_ID, BAUD_RATE);               // Set BAUDRATE
-	uart_set_hw_flow(UART_ID, false, false);                                   // Set UART flow control CTS/RTS
-	uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);                    // Set data format
-	uart_set_fifo_enabled(UART_ID, false);                                     // Turn off FIFO's
-	
-	uart_status_handler();													   // Check UART status
-	
-	uart_puts(UART_ID, "\r\n\r\nz80neo\r\n");
+
+	int __unused actual = uart_set_baudrate(UART_ID, BAUD_RATE); // Set BAUDRATE
+	uart_set_hw_flow(UART_ID, false, false); // Set UART flow control CTS/RTS
+	uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY); // Set data format
+	uart_set_fifo_enabled(UART_ID, false);					// Turn off FIFO's
+
+	uart_status_handler(); // Check UART status
+
+	uart_puts(UART_ID, "\r\n");
+	uart_puts(UART_ID, " _______  ______  ______  _______  _______  _______ \r\n");
+	uart_puts(UART_ID, "|__     ||  __  ||      ||    |  ||    ___||       |\r\n");
+	uart_puts(UART_ID, "|     __||  __  ||  --  ||       ||    ___||   -   |\r\n");
+	uart_puts(UART_ID, "|_______||______||______||__|____||_______||_______|\r\n");
+	uart_puts(UART_ID, "\r\n");
+	uart_puts(UART_ID, "z80neo - TurBoss 2026\r\n");
+	uart_puts(UART_ID, "\r\n");
 	uart_puts(UART_ID, "Boot init\r\n");
-
-
 	uart_puts(UART_ID, "Configure CPU clock\r\n");
-	// Configure GPIO PIN for PWM
+
+		// Configure GPIO PIN for PWM
 	gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PWM);
 	uint slice_num = pwm_gpio_to_slice_num(GPIO_PWM_SIG);
 	uint channel_num = pwm_gpio_to_channel(GPIO_PWM_SIG);
-
 
 	// calculate clock divider
 
 	// Target a reasonable wrap value for good resolution
 	uint32_t target_wrap = PWM_WRAP;
-	float frequency_hz = 8000.0f;  // 8000.0f = 8 Khz (yes :)
-	float system_clock = clock_get_hz(clk_sys);  // 150Mhz default pico 2 clock speed
+	float frequency_hz = 8000.0f; // 8000.0f = 8 Khz (yes :)
+	float system_clock =
+		clock_get_hz(clk_sys); // 150Mhz default pico 2 clock speed
 
 	// Calculate required clock divider
 	float clock_divider = system_clock / (frequency_hz * (target_wrap + 1));
 
 	// Constrain divider to valid range (1-255)
 	if (clock_divider < 1.0f) {
-	    clock_divider = 1.0f;
-	    target_wrap = (uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
+		clock_divider = 1.0f;
+		target_wrap =
+			(uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
 	} else if (clock_divider > 255.0f) {
-	    clock_divider = 255.0f;
-	    target_wrap = (uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
-	    
-	    // Ensure wrap doesn't exceed maximum
-	    if (target_wrap > 65535) target_wrap = 65535;
+		clock_divider = 255.0f;
+		target_wrap =
+			(uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
+
+		// Ensure wrap doesn't exceed maximum
+		if (target_wrap > 65535)
+			target_wrap = 65535;
 	}
 
-	int duty_cycle = target_wrap * 0.50;  // 0.50 == 50% duty cycle
+	int duty_cycle = target_wrap * 0.50; // 0.50 == 50% duty cycle
 
-	//configure pwm 
+	// configure pwm
 	pwm_config config = pwm_get_default_config();
 
 	pwm_config_set_clkdiv(&config, clock_divider);
 	pwm_config_set_wrap(&config, target_wrap);
-	pwm_init(slice_num, &config, true);	
-
+	pwm_init(slice_num, &config, true);
 
 	uart_puts(UART_ID, "Initialize SD card\r\n");
-	
-	// SD 
-	
+
+	// SD
+
 	pico_fatfs_spi_config_t fs_config = {
 		spi1, // if unmatched SPI pin assignments with spi0/spi1 or explicitly
 			  // designated as NULL, SPI PIO will be configured
-		CLK_SLOW_DEFAULT,
-		CLK_FAST_DEFAULT,
-		PIN_SPI1_MISO,	 // SPIx_RX
-		PIN_SPI1_CS,     // SPIx_CS
-		PIN_SPI1_SCK,    // SPIx_SCK
-		PIN_SPI1_MOSI,	 // SPIx_TX
-		true // use internal pullup
+		CLK_SLOW_DEFAULT, CLK_FAST_DEFAULT,
+		PIN_SPI1_MISO, // SPIx_RX
+		PIN_SPI1_CS,   // SPIx_CS
+		PIN_SPI1_SCK,  // SPIx_SCK
+		PIN_SPI1_MOSI, // SPIx_TX
+		true		   // use internal pullup
 	};
 
 	spi_configured = pico_fatfs_set_config(&fs_config);
 
-
-	if (!spi_configured){
+	if (!spi_configured) {
 		while (true) {
 			gpio_put(LED_PIN, 1);
 			sleep_ms(150);
 			gpio_put(LED_PIN, 0);
 			sleep_ms(100);
-
 		}
 	}
-
 
 	//
 	//
@@ -2616,12 +2628,11 @@ int main() {
 	// INIT SCREEN
 	//
 
-	uart_puts(UART_ID, "Init Display\r\n\r\n");
+	uart_puts(UART_ID, "Init Display\r\n");
 	SSD1306_init();
-	
-	
+
 	calc_render_area_buflen(&frame_area);
-	
+
 	// zero the entire display
 	memset(display_buf, 0, SSD1306_BUF_LEN);
 	render(display_buf, &frame_area);
@@ -2629,10 +2640,8 @@ int main() {
 	// show logo
 	show_logo();
 
-
 	sleep_ms(DISPLAY_DELAY_LONG);
 	sleep_ms(DISPLAY_DELAY_LONG);
-
 
 	// boot info
 	boot_screen();
@@ -2659,24 +2668,26 @@ int main() {
 	//
 
 	clear_screen();
-	
+
 	uart_puts(UART_ID, "Read SD Card\r\n");
-	
+
 	WriteString(buf, 3, 0, "SD READ");
 	render(buf, &frame_area);
 	sleep_ms(DISPLAY_DELAY_LONG);
 
-	
 	sd_read_init();
 
 	clear_screen();
 
-	uart_puts(UART_ID, "LOAD PROGS\r\n");
+	uart_puts(UART_ID, "Loading program...\r\n");
 	WriteString(buf, 0, 0, "LOAD PROGS");
 	render(buf, &frame_area);
 	sleep_ms(DISPLAY_DELAY_LONG);
 
 	load_init_progs();
+	sleep_ms(DISPLAY_DELAY_LONG);
+	uart_puts(UART_ID, "Ok!\r\n");
+	sleep_ms(DISPLAY_DELAY_LONG);
 
 	clear_screen();
 
@@ -2686,13 +2697,11 @@ int main() {
 
 	show_info();
 
-
-
 	//
 	// INIT GPIO
 	//
 
-	uart_puts(UART_ID, "Init GPIO pinss\r\n");
+	uart_puts(UART_ID, "Init GPIO pins\r\n");
 	// BUS GPIO 0 <--> 7
 	for (gpio = BUS_GPIO_START; gpio <= BUS_GPIO_END; gpio++) {
 		bus_mask |= (1 << gpio);
@@ -2700,7 +2709,6 @@ int main() {
 		gpio_set_function(gpio, GPIO_FUNC_SIO);
 		gpio_set_dir(gpio, GPIO_IN);
 	}
-
 
 	// ADDRESS SELECT 0 <--> 7
 
@@ -2752,7 +2760,7 @@ int main() {
 	gpio_set_function(MREQ_INPUT, GPIO_FUNC_SIO);
 	gpio_set_dir(MREQ_INPUT, GPIO_IN);
 	gpio_set_inover(MREQ_INPUT, GPIO_OVERRIDE_NORMAL);
-	
+
 	// CPU RD
 
 	gpio_init(RD_INPUT);
@@ -2766,7 +2774,7 @@ int main() {
 	gpio_set_function(IORQ_INPUT, GPIO_FUNC_SIO);
 	gpio_set_dir(IORQ_INPUT, GPIO_IN);
 	gpio_set_inover(IORQ_INPUT, GPIO_OVERRIDE_NORMAL);
-	
+
 	// CPU WR
 
 	gpio_init(WR_INPUT);
@@ -2774,11 +2782,9 @@ int main() {
 	gpio_set_dir(WR_INPUT, GPIO_IN);
 	gpio_set_inover(WR_INPUT, GPIO_OVERRIDE_NORMAL);
 
-
 	//
 	//
 	//
-
 
 	m_adr = 0;
 
@@ -2788,17 +2794,14 @@ int main() {
 	mem_r_op = 0;
 	mem_w_op = 0;
 
-
 	uart_puts(UART_ID, "Start Display handler\r\n");
-	
-	multicore_launch_core1(display_loop);
 
+	multicore_launch_core1(display_loop);
 
 	while (DEBUG_ADC) {
 		sleep_ms(1000);
 	}
-	
-	
+
 	//
 	//
 	//
@@ -2808,51 +2811,61 @@ int main() {
 	gpio_put(SEL1_OUT, 1);
 	gpio_put(SEL2_OUT, 1);
 	gpio_put(SEL3_OUT, 1);
-	
-	
-	
+
 	// MREQ and IORQ signal handlers
-	
-	gpio_set_irq_enabled_with_callback(MREQ_INPUT, GPIO_IRQ_EDGE_FALL, true, &bus_callback);
+
+	gpio_set_irq_enabled_with_callback(MREQ_INPUT, GPIO_IRQ_EDGE_FALL, true,
+									   &bus_callback);
 	gpio_set_irq_enabled(IORQ_INPUT, GPIO_IRQ_EDGE_FALL, true);
 
 	// Uart0 RX IRQ
-	
-	int UART_IRQ = UART_ID == uart0 ? UART0_IRQ : UART1_IRQ;                   // Set up a RX interrupt
-	irq_set_exclusive_handler(UART_IRQ, on_uart_rx);                           // Enable UART to send interrupts - RX only
-	irq_set_enabled(UART_IRQ, true);
-	uart_set_irq_enables(UART_ID, true, false);                                // Enable RX interrupt, disable TX interrupt
 
+	int UART_IRQ =
+		UART_ID == uart0 ? UART0_IRQ : UART1_IRQ; // Set up a RX interrupt
+	irq_set_exclusive_handler(
+		UART_IRQ, on_uart_rx); // Enable UART to send interrupts - RX only
+	irq_set_enabled(UART_IRQ, true);
+	uart_set_irq_enables(UART_ID, true,
+						 false); // Enable RX interrupt, disable TX interrupt
+
+	reset_hold();
+
+	sleep_ms(200);
+
+	reset_release();
 	// Enable CPU clock
 
 	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
 
 	uart_puts(UART_ID, "Start CPU clock\r\n");
 
-	reset_release();
 
 	uart_puts(UART_ID, "\r\nSystem UP!\r\n");
+
+
 
 	while (true) {
 
 		if (disabled) {
+			reset_hold();
+
 			gpio_put(LED_PIN, 1);
 			pwm_set_chan_level(slice_num, channel_num, 0);
 			confirmed = true;
-			
+
 			while (disabled) {
 			};
-			
+
 			pwm_set_chan_level(slice_num, channel_num, duty_cycle);
 			gpio_put(LED_PIN, 0);
+
+			reset_release();
 		}
 
-
 		uart_status_handler();
-		
-		tight_loop_contents();
-		
-		// cdc_task();
 
+		tight_loop_contents();
+
+		// cdc_task();
 	}
 }
