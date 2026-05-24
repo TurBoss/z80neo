@@ -14,3 +14,5 @@ firmware/z80neo/build/
 .pydevproject
 hardware/gerber/
 hardware/main-backups
+.settings/
+.vscode/

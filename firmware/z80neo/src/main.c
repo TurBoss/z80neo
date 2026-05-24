@@ -71,7 +71,7 @@
 // CLK
 #define PWM_WRAP 65535 // 16-bit resolution
 
-#define INST_DELAY 45 // 45
+#define INST_DELAY 1 // 45
 
 // uart RX things
 bool rx_data_available = false;
@@ -86,6 +86,18 @@ uint8_t rx_index = 0;
 uint slice;
 
 bool spi_configured;
+
+
+
+uint16_t pc = 0;
+uint8_t opcode = 0;
+
+uint8_t t_clock = 0;
+uint8_t m_clock = 0;
+
+uint8_t next_oclock = 0;
+uint8_t next_mclock = 0;
+uint8_t next_dclock = 0;
 
 struct render_area frame_area = {
 	start_col : 0,
@@ -184,6 +196,7 @@ void save();
 //
 
 #define DEBUG_LOAD true
+#define DEBUG_IO true
 #define ADC_DEBUG_DELAY 100
 
 volatile bool DEBUG_ADC = false;
@@ -221,8 +234,10 @@ const char *hexStringChar[] = {"0", "1", "2", "3", "4", "5", "6", "7",
 
 #define BUFFER_SIZE 8
 
+char serial_text_buffer[TEXT_BUFFER_SIZE];
 char text_buffer[TEXT_BUFFER_SIZE];
 
+char line_buffer0[24];
 char line_buffer1[24];
 char line_buffer2[24];
 char line_buffer3[24];
@@ -230,7 +245,6 @@ char line_buffer4[24];
 char line_buffer5[24];
 char line_buffer6[24];
 char line_buffer7[24];
-char line_buffer8[24];
 
 char tbmon_text_buffer[8][17];
 
@@ -296,12 +310,13 @@ char *screen[LINES] = {line1, line2, line3, line4, line5, line6, line7, line8};
 //
 //
 
-#define MAX_BANKS 8
+#define MAX_BANKS 4
 
 static uint8_t cur_bank = 0;
 
-uint8_t ram[MAX_BANKS][(uint32_t)RAM_SIZE] = {};
-uint8_t sdram[MAX_BANKS][(uint32_t)SD_RAM_SIZE] = {};
+uint8_t ram[MAX_BANKS][(uint16_t)RAM_SIZE] = {};
+uint8_t mmuram[(uint16_t)RAM_SIZE] = {};
+uint8_t sdram[(uint16_t)SD_RAM_SIZE] = {};
 
 uint16_t tbmon_idx = 0;
 
@@ -325,7 +340,7 @@ uint32_t gpio = 0;
 uint8_t low_adr = 0x00;
 uint8_t high_adr = 0x01;
 
-uint16_t m_adr = 0x00;
+uint16_t m_adr = 0x0000;
 
 uint8_t io_r_op = 0x00;
 uint8_t io_w_op = 0x00;
@@ -339,7 +354,8 @@ uint32_t d_adr = 0;
 uint32_t dr_op = 0;
 uint32_t dw_op = 0;
 
-
+char *load_chars = "|/-\\-|-//";
+uint8_t load_char_index = 0;
 
 int center_string(char *string) {
 	int n = strlen(string);
@@ -360,7 +376,7 @@ unsigned char decode_hex(char c) {
 }
 
 void clear_bank(uint8_t bank) {
-	for (uint32_t adr = 0; adr < RAM_SIZE; adr++) {
+	for (uint16_t adr = 0; adr < RAM_SIZE; adr++) {
 		ram[bank][adr] = 0;
 	}
 	memset(BANK_PROG[bank], 0, FILE_LENGTH);
@@ -535,9 +551,9 @@ void display_ram_viewer() {
 		for (int col = 0; col < BYTES_PER_ROW; col++) {
 
 			if (col < 3) {
-				sprintf(byte_data, "%02x:", sdram[cur_bank][offset + col]);
+				sprintf(byte_data, "%02x:", sdram[offset + col]);
 			} else {
-				sprintf(byte_data, "%02x", sdram[cur_bank][offset + col]);
+				sprintf(byte_data, "%02x", sdram[offset + col]);
 			}
 
 			strcat(tbmon_text_buffer[line], byte_data);
@@ -662,6 +678,8 @@ void display_loop() {
 
 		if ((cur_disp_mode == OFF) & (tbmon == false)) {
 
+		    sprintf(line_buffer1, "PC: %04x OP: $02x", pc, opcode);
+	     	WriteString(buf, 0, 0 * 8, line_buffer1);
 
 			sprintf(line_buffer1, "ADDR: #%08x", m_adr);
 			WriteString(buf, 0, 1 * 8, line_buffer1);
@@ -1447,7 +1465,7 @@ void load_file(bool quiet) {
 	uint8_t hex_digit = 0;
 	uint8_t current_byte = 0;
 	uint8_t data_index = 0;
-	uint8_t data_buffer[16][256];
+	uint8_t data_buffer[MAX_BANKS][RAM_SIZE];
 
 	int line = 0;
 	uint32_t bytes_loaded = 0;
@@ -1457,13 +1475,26 @@ void load_file(bool quiet) {
 		clear_screen();
 
 		print_string(center_string("--HEX LOADER--"), 0, "--HEX LOADER--");
+		print_string(0, 1, file);
 		print_string(0, 2, "ADDR:          ");
 		print_string(0, 3, "BANK:          ");
 		print_string(0, 4, "DATA:          ");
 		print_string(0, 5, "LINE:          ");
 	}
 
+	uart_puts(UART_ID, "Loading hex\r\n");
+
 	while (true) {
+
+
+
+        sprintf(serial_text_buffer, "%c\r", load_chars[load_char_index]);
+        uart_puts(UART_ID, serial_text_buffer);
+        load_char_index += 1;
+        if (load_char_index > strlen(load_chars)){
+            load_char_index = 0;
+        }
+
 		memset(&buf, 0, sizeof(buf));
 
 		if (!f_gets(buf, sizeof(buf), &fil))
@@ -1593,7 +1624,7 @@ void load_file(bool quiet) {
 
 						// Write data to memory
 						for (int j = 0; j < intel_byte_count; j++) {
-							sdram[cur_bank][intel_absolute_address + j] = data_buffer[cur_bank][j];
+							ram[cur_bank][intel_absolute_address + j] = data_buffer[cur_bank][j];
 							bytes_loaded++;
 
 							if (DEBUG_LOAD && j < 4) { // Show first few bytes
@@ -1687,6 +1718,8 @@ void load_file(bool quiet) {
 
 	if (DEBUG_LOAD) {
 		sprintf(text_buffer, "Loaded %lu bytes", bytes_loaded);
+        uart_puts(UART_ID, text_buffer);
+        uart_puts(UART_ID, "\r\n");
 		print_string(0, 6, text_buffer);
 		sleep_ms(DISPLAY_DELAY_LONG);
 	}
@@ -1701,10 +1734,10 @@ void load_file(bool quiet) {
 
 	strcpy(BANK_PROG[cur_bank], file);
 
-	// Copy from sdram to bank memory
-	for (uint32_t b = 0; b < RAM_SIZE; b++) {
-		ram[cur_bank][b] = sdram[cur_bank][b];
-	}
+	// // Copy from sdram to bank memory
+	// for (uint8_t b = 0; b < RAM_SIZE; b++) {
+	// 	ram[cur_bank][b] = sdram[b];
+	// }
 
 	reset_release();
 
@@ -1807,7 +1840,7 @@ void save() {
 		//<< 0x9 |
 		//					 ((b & 0b00000000000000000000000000010000) ? 1 : 0)
 		//<< 0xA; 		sdram[b] = ram[cur_bank][i];
-		sdram[cur_bank][b] = ram[cur_bank][b];
+		sdram[b] = ram[cur_bank][b];
 	}
 
 	clear_screen();
@@ -1866,7 +1899,7 @@ void save() {
 	byte val = 0;
 
 	for (uint32_t pc = 0; pc < RAM_SIZE; pc++) {
-		val = sdram[cur_bank][pc];
+		val = sdram[pc];
 
 		ret = f_printf(&fil, (pc % 16 == 0) ? "\n%02X" : " %02X", val);
 		if (ret < 0) {
@@ -1937,11 +1970,28 @@ void show_info(void) {
 //
 //
 
-void reset_release(void) { gpio_set_dir(RESET_OUT, GPIO_IN); }
+
+
+
+
+void reset_release(void) {
+   gpio_set_dir(RESET_OUT, GPIO_IN);
+}
 
 void reset_hold(void) {
 	gpio_set_dir(RESET_OUT, GPIO_OUT);
 	gpio_put(RESET_OUT, 0);
+
+    pc = 0;
+    opcode = 0;
+
+    t_clock = 0;
+    m_clock = 0;
+
+    next_oclock = 0;
+    next_mclock = 0;
+    next_dclock = 0;
+
 }
 
 //
@@ -2007,461 +2057,34 @@ char read_uart_char() {
 	}
 }
 
-// char tx_buff[2] = "\0\0";
+
+char log_buf[32];
 
 bool mreq = true;
 bool iorq = true;
+
+bool clk_level = true;
 
 bool rd = true;
 bool wr = true;
 
 void bus_callback(uint pin, uint32_t events) {
 
-	//
-	// Device access
-	//
-
 	if (pin == IORQ_INPUT) {
-
-		iorq_status = true;
-
-		wr = gpio_get(WR_INPUT);
-		rd = gpio_get(RD_INPUT);
-
-		if (!wr) {
-
-			// Read low address
-
-			// DIR 1
-			gpio_put(DIR1_OUT, 0);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT 1
-			gpio_put(SEL1_OUT, 0);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-
-			sleep_us(INST_DELAY);
-
-			// GPIO BUS direction IN
-			set_bus_dir(0);
-
-			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
-					   0b11111111); // A0 - A7
-
-			// Read high address
-
-			// DIR 2
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 0);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT 2
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 0);
-			gpio_put(SEL3_OUT, 1);
-
-			sleep_us(INST_DELAY);
-
-			// GPIO BUS direction IN
-			set_bus_dir(0);
-
-			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
-
-			m_adr = low_adr | high_adr;
-
-			wr = gpio_get(WR_INPUT);
-			// rd = gpio_get(RD_INPUT);
-
-			// Write device from CPU
-			if (!wr) {
-			    // MMU
-    			if (low_adr == MMU_PAGE_0) {
-
-    			}
-    			else if (low_adr == MMU_PAGE_1) {
-
-    			}
-    			else if (low_adr == MMU_PAGE_2) {
-
-    			}
-    			else if (low_adr == MMU_PAGE_3) {
-
-    			}
-
-    			else if (low_adr == SERIAL_PORT_1) {
-
-					// UART TX
-
-					// DIR 2
-					gpio_put(DIR1_OUT, 1);
-					gpio_put(DIR2_OUT, 1);
-					gpio_put(DIR3_OUT, 0);
-
-					// SELECT 2
-					gpio_put(SEL1_OUT, 1);
-					gpio_put(SEL2_OUT, 1);
-					gpio_put(SEL3_OUT, 0);
-
-					gpio_set_dir_masked(bus_mask, bus_mask);
-
-					sleep_us(INST_DELAY); // 3
-
-					// GPIO BUS direction IN
-					set_bus_dir(0);
-
-					io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
-
-					// tx_buff = decode_hex(io_w_op);
-					//				sprintf(tx_buff, "%c\0", io_w_op);
-					//				uart_puts(UART_ID, tx_buff);
-
-					uart_putc(UART_ID, io_w_op);
-
-					// rx_data_available = false;
-					// tud_cdc_n_write(1, tx_buffer, 1);
-					// tud_cdc_n_write_flush(1);
-
-					// io_w_op = 0;
-				}
-			}
+	    if (events == 0x4) {
+	        iorq = true;
 		}
-		// Device read from CPU
-		else {
-			// Read low address
-
-			// DIR 1
-			gpio_put(DIR1_OUT, 0);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT 1
-			gpio_put(SEL1_OUT, 0);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-
-			sleep_us(INST_DELAY);
-
-			// GPIO BUS direction IN
-			set_bus_dir(0);
-
-			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
-					   0b11111111); // A0 - A7
-
-			// Read high address
-
-			// DIR 2
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 0);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT 2
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 0);
-			gpio_put(SEL3_OUT, 1);
-
-			sleep_us(INST_DELAY);
-
-			// GPIO BUS direction IN
-			set_bus_dir(0);
-
-			high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
-
-			m_adr = low_adr | high_adr;
-
-			if (low_adr == SERIAL_PORT_1) {
-
-				// UART RX
-
-				// DIR 3
-				gpio_put(DIR1_OUT, 1);
-				gpio_put(DIR2_OUT, 1);
-				gpio_put(DIR3_OUT, 1);
-
-				// SLECT 3
-				gpio_put(SEL1_OUT, 1);
-				gpio_put(SEL2_OUT, 1);
-				gpio_put(SEL3_OUT, 0);
-
-				io_r_op = read_uart_char();
-
-				uart_putc(UART_ID, io_r_op); // Debug
-
-				// GPIO BUS direction OUT
-				set_bus_dir(1);
-
-				gpio_set_dir_masked(bus_mask, bus_mask);
-				gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
-
-				sleep_us(INST_DELAY);
-
-				// io_r_op = 0;
-			}
-
-			else if (low_adr == SERIAL_STATUS_1) {
-
-				// serial_status |= 0x01; // Data Received (RX Ready)
-
-				// DIR 3
-				gpio_put(DIR1_OUT, 1);
-				gpio_put(DIR2_OUT, 1);
-				gpio_put(DIR3_OUT, 1);
-
-				// SLECT 3
-				gpio_put(SEL1_OUT, 1);
-				gpio_put(SEL2_OUT, 1);
-				gpio_put(SEL3_OUT, 0);
-
-				// uart_putc(UART_ID, serial_status_1);  // Debug
-
-				io_r_op = serial_status_1;
-
-				// GPIO BUS direction OUT
-				set_bus_dir(1);
-
-				gpio_set_dir_masked(bus_mask, bus_mask);
-				gpio_put_masked(bus_mask, (io_r_op << BUS_GPIO_START));
-
-				sleep_us(INST_DELAY);
-
-				// io_r_op = 0;
-			}
+		else if (events == 0x8) {
+            iorq = false;
 		}
-
-		// DIR OFF
-		gpio_put(DIR1_OUT, 1);
-		gpio_put(DIR2_OUT, 1);
-		gpio_put(DIR3_OUT, 1);
-
-		// SELECT OFF
-		gpio_put(SEL1_OUT, 1);
-		gpio_put(SEL2_OUT, 1);
-		gpio_put(SEL3_OUT, 1);
-
-		iorq_status = false;
 	}
-
-	//
-	// Memory access
-	//
-
 	else if (pin == MREQ_INPUT) {
-
-		// Memory read
-		mreq_status = true;
-
-		rd = gpio_get(RD_INPUT);
-
-		if (!rd) {
-
-			// DIR 1
-			gpio_put(DIR1_OUT, 0);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT 1
-			gpio_put(SEL1_OUT, 0);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-
-			// GPIO BUS direction IN
-			set_bus_dir(0);
-
-			sleep_us(INST_DELAY); // 1
-
-			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
-					   0b11111111); // A0 - A7
-
-			// DIR OFF
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT OFF
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-
-			rd = gpio_get(RD_INPUT);
-
-			if (!rd) {
-
-				// gpio_set_dir_masked(bus_mask, 0);
-
-				// DIR 2 ON
-				gpio_put(DIR1_OUT, 1);
-				gpio_put(DIR2_OUT, 0);
-				gpio_put(DIR3_OUT, 1);
-
-				// SELECT 2
-				gpio_put(SEL1_OUT, 1);
-				gpio_put(SEL2_OUT, 0);
-				gpio_put(SEL3_OUT, 1);
-
-				sleep_us(INST_DELAY); // 2
-
-				set_bus_dir(0);
-
-				high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
-							0b11111111) << 8; // A8 - A15
-
-
-				// DIR OFF
-				gpio_put(DIR1_OUT, 1);
-				gpio_put(DIR2_OUT, 1);
-				gpio_put(DIR3_OUT, 1);
-
-				// SELECT OFF
-				gpio_put(SEL1_OUT, 1);
-				gpio_put(SEL2_OUT, 1);
-				gpio_put(SEL3_OUT, 1);
-
-				gpio_set_dir_masked(bus_mask, 0);
-
-				m_adr = low_adr | high_adr;
-				rd = gpio_get(RD_INPUT);
-
-				if (!rd) {
-
-
-					cur_bank = (high_adr & 0b11000000) >> 6;
-
-					// DIR 3
-					gpio_put(DIR1_OUT, 1);
-					gpio_put(DIR2_OUT, 1);
-					gpio_put(DIR3_OUT, 1);
-
-					// SLECT 3
-					gpio_put(SEL1_OUT, 1);
-					gpio_put(SEL2_OUT, 1);
-					gpio_put(SEL3_OUT, 0);
-
-					mem_r_op = ram[cur_bank][m_adr];
-
-					set_bus_dir(1);
-
-					gpio_set_dir_masked(bus_mask, bus_mask);
-					gpio_put_masked(bus_mask, (mem_r_op << BUS_GPIO_START));
-
-					sleep_us(INST_DELAY); // 35
-
-					// mem_r_op = 0;
-
-					// DIR OFF
-					gpio_put(DIR1_OUT, 1);
-					gpio_put(DIR2_OUT, 1);
-					gpio_put(DIR3_OUT, 1);
-
-					// SELECT OFF
-					gpio_put(SEL1_OUT, 1);
-					gpio_put(SEL2_OUT, 1);
-					gpio_put(SEL3_OUT, 1);
-
-					gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
-					gpio_set_dir_masked(bus_mask, 0);
-				}
-			}
+	    if (events == 0x4) {
+	        mreq = true;
 		}
-
-		else {
-
-			// DIR 1
-			gpio_put(DIR1_OUT, 0);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT 1
-			gpio_put(SEL1_OUT, 0);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-
-			// GPIO BUS direction IN
-			set_bus_dir(0);
-
-			sleep_us(INST_DELAY); // 1
-
-			low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
-					   0b11111111); // A0 - A7
-
-			// DIR OFF
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT OFF
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-
-			// gpio_set_dir_masked(bus_mask, 0);
-
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 0);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT 2 ON HIGH ADDRESS
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 0);
-			gpio_put(SEL3_OUT, 1);
-
-			// sleep_us(INST_DELAY);   // 2
-
-			set_bus_dir(0);
-
-			high_adr =
-				(((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)
-				<< 8; // A8 - A15
-
-			// DIRECTION OFF
-			gpio_put(DIR1_OUT, 1);
-			gpio_put(DIR2_OUT, 1);
-			gpio_put(DIR3_OUT, 1);
-
-			// SELECT OFF
-			gpio_put(SEL1_OUT, 1);
-			gpio_put(SEL2_OUT, 1);
-			gpio_put(SEL3_OUT, 1);
-
-			m_adr = low_adr | high_adr;
-
-			gpio_set_dir_masked(bus_mask, 0);
-
-			rd = gpio_get(RD_INPUT);
-			wr = gpio_get(WR_INPUT);
-
-			if ((rd) && (!wr)) {
-
-
-				cur_bank = (high_adr & 0b11000000) >> 6;
-
-				// sleep_ms(0);
-
-				// SLECT 3 DATA
-				gpio_put(SEL1_OUT, 1);
-				gpio_put(SEL2_OUT, 1);
-				gpio_put(SEL3_OUT, 0);
-
-				// DIRECTION 3 DATA
-				gpio_put(DIR1_OUT, 1);
-				gpio_put(DIR2_OUT, 1);
-				gpio_put(DIR3_OUT, 0);
-
-				gpio_set_dir_masked(bus_mask, bus_mask);
-
-				sleep_us(INST_DELAY); // 3
-
-				set_bus_dir(0);
-
-				mem_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
-
-				ram[cur_bank][m_adr] = mem_w_op;
-
-				gpio_set_dir_masked(bus_mask, 0);
-				// mem_w_op = 0;
-			}
+	    else if (events == 0x8) {
+            mreq = false;
 		}
-		mreq_status = false;
 	}
 }
 
@@ -2484,8 +2107,951 @@ void uart_status_handler(void) {
 	}
 }
 
+
+void pwm_irq_handler() {
+    pwm_clear_irq(pwm_gpio_to_slice_num(GPIO_PWM_SIG));
+
+    // sleep_ms(1);
+
+	rd = gpio_get(RD_INPUT);
+	wr = gpio_get(WR_INPUT);
+
+	if (DEBUG_IO) {
+	    sprintf(log_buf, "CLK M%d T%d -- RD:%1b WR:%1b MREQ:%1b IOREQ:%1b\r\n", m_clock+1, t_clock+1, rd, wr, mreq, iorq);
+	    uart_puts(UART_ID, log_buf);
+	}
+
+	/*
+	if (!mreq) {
+		t_clock = 0;
+		m_clock = 0;
+
+		if (DEBUG_IO) {
+		    sprintf(log_buf, "\t\tMREQ\r\n");
+		    uart_puts(UART_ID, log_buf);
+		}
+
+	}
+	if (!iorq) {
+		t_clock = 0;
+		m_clock = 0;
+
+		if (DEBUG_IO) {
+		    sprintf(log_buf, "\t\tIORQ\r\n");
+		    uart_puts(UART_ID, log_buf);
+		}
+	}
+	*/
+	// POS CLOCK
+    // if (clk_level) {
+    //
+
+    if (!rd | !wr | !mreq | !iorq){
+
+        if (m_clock == 0) {
+            // M1 T1
+            if ((t_clock == 0) && (!mreq)) {
+
+                t_clock = 1;
+
+                if (DEBUG_IO) {
+                    sprintf(log_buf, "\t\tSKIP\r\n");
+                    uart_puts(UART_ID, log_buf);
+                }
+            }
+
+            // M1 T2
+            else if ((t_clock == 1) && (!rd)) {
+
+               	t_clock = 2;
+
+                // DIR 1
+               	gpio_put(DIR1_OUT, 0);
+               	gpio_put(DIR2_OUT, 1);
+               	gpio_put(DIR3_OUT, 1);
+
+               	// SELECT 1
+               	gpio_put(SEL1_OUT, 0);
+               	gpio_put(SEL2_OUT, 1);
+               	gpio_put(SEL3_OUT, 1);
+
+               	// GPIO BUS direction IN
+               	set_bus_dir(0);
+
+               	sleep_us(INST_DELAY); // 1
+
+               	low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+               		   0b11111111); // A0 - A7
+
+               	// gpio_set_dir_masked(bus_mask, 0);
+
+               	// DIR 2 ON
+               	gpio_put(DIR1_OUT, 1);
+               	gpio_put(DIR2_OUT, 0);
+               	gpio_put(DIR3_OUT, 1);
+
+               	// SELECT 2
+               	gpio_put(SEL1_OUT, 1);
+               	gpio_put(SEL2_OUT, 0);
+               	gpio_put(SEL3_OUT, 1);
+
+               	sleep_us(INST_DELAY); // 2
+
+               	set_bus_dir(0);
+
+               	high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+               					0b11111111) << 8; // A8 - A15
+
+
+               	// DIR OFF
+               	gpio_put(DIR1_OUT, 1);
+               	gpio_put(DIR2_OUT, 1);
+               	gpio_put(DIR3_OUT, 1);
+
+               	// SELECT OFF
+               	gpio_put(SEL1_OUT, 1);
+               	gpio_put(SEL2_OUT, 1);
+               	gpio_put(SEL3_OUT, 1);
+
+               	gpio_set_dir_masked(bus_mask, 0);
+
+               	m_adr = low_adr | high_adr;
+
+                if (DEBUG_IO) {
+                    sprintf(log_buf, "\t\tREAD ADDRESS: %08x\r\n", m_adr);
+                    uart_puts(UART_ID, log_buf);
+                }
+
+
+            }
+            // M1 T3
+            else if ((t_clock == 2) & !rd) {
+                // sleep_ms(0);
+
+                t_clock = 0;
+                m_clock = 1;
+                mem_r_op = ram[cur_bank][m_adr];
+
+
+
+                // DIR OFF
+                gpio_put(DIR1_OUT, 1);
+                gpio_put(DIR2_OUT, 1);
+                gpio_put(DIR3_OUT, 1);
+
+                // SELECT OFF
+                gpio_put(SEL1_OUT, 1);
+                gpio_put(SEL2_OUT, 1);
+                gpio_put(SEL3_OUT, 0);
+
+                set_bus_dir(1);
+
+
+                sleep_ms(INST_DELAY);
+
+                gpio_set_dir_masked(bus_mask, bus_mask);
+                gpio_put_masked(bus_mask, (mem_r_op << BUS_GPIO_START));
+
+                sleep_ms(INST_DELAY);
+
+                // mem_r_op = 0;
+
+                // DIR OFF
+                gpio_put(DIR1_OUT, 1);
+                gpio_put(DIR2_OUT, 1);
+                gpio_put(DIR3_OUT, 1);
+
+                // SELECT OFF
+                gpio_put(SEL1_OUT, 1);
+                gpio_put(SEL2_OUT, 1);
+                gpio_put(SEL3_OUT, 1);
+
+                gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
+                gpio_set_dir_masked(bus_mask, 0);
+
+                if (DEBUG_IO) {
+                    sprintf(log_buf, "\t\tWRITE TO CPU: %08x\r\n", mem_r_op);
+                    uart_puts(UART_ID, log_buf);
+                }
+            }
+        }
+        else if (m_clock == 1) {
+            // M2 T1
+            if ((t_clock == 0) && (!mreq)) {
+
+                t_clock = 1;
+
+
+                if (DEBUG_IO) {
+                    sprintf(log_buf, "\t\tSKIP\r\n");
+                    uart_puts(UART_ID, log_buf);
+                }
+            }
+            // M2 T2
+            else if (t_clock == 1) {
+
+               	t_clock = 2;
+
+               	// DIR 1
+               	gpio_put(DIR1_OUT, 0);
+               	gpio_put(DIR2_OUT, 1);
+               	gpio_put(DIR3_OUT, 1);
+
+               	// SELECT 1
+               	gpio_put(SEL1_OUT, 0);
+               	gpio_put(SEL2_OUT, 1);
+               	gpio_put(SEL3_OUT, 1);
+
+               	// GPIO BUS direction IN
+               	set_bus_dir(0);
+
+               	sleep_us(INST_DELAY); // 1
+
+               	low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+               		   0b11111111); // A0 - A7
+
+               	// gpio_set_dir_masked(bus_mask, 0);
+
+               	// DIR 2 ON
+               	gpio_put(DIR1_OUT, 1);
+               	gpio_put(DIR2_OUT, 0);
+               	gpio_put(DIR3_OUT, 1);
+
+               	// SELECT 2
+               	gpio_put(SEL1_OUT, 1);
+               	gpio_put(SEL2_OUT, 0);
+               	gpio_put(SEL3_OUT, 1);
+
+               	sleep_us(INST_DELAY); // 2
+
+               	set_bus_dir(0);
+
+               	high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+               					0b11111111) << 8; // A8 - A15
+
+
+               	// DIR OFF
+               	gpio_put(DIR1_OUT, 1);
+               	gpio_put(DIR2_OUT, 1);
+               	gpio_put(DIR3_OUT, 1);
+
+               	// SELECT OFF
+               	gpio_put(SEL1_OUT, 1);
+               	gpio_put(SEL2_OUT, 1);
+               	gpio_put(SEL3_OUT, 1);
+
+               	gpio_set_dir_masked(bus_mask, 0);
+
+               	m_adr = low_adr | high_adr;
+
+                if (DEBUG_IO) {
+                    sprintf(log_buf, "\t\tREAD ADDRESS: %08x\r\n", m_adr);
+                    uart_puts(UART_ID, log_buf);
+                }
+
+
+            }
+            // M2 T3
+            else if ((t_clock == 2) & !wr) {
+                // sleep_ms(0);
+
+                t_clock = 0;
+                m_clock = 0;
+
+
+                // SLECT 3 DATA
+          		gpio_put(SEL1_OUT, 1);
+          		gpio_put(SEL2_OUT, 1);
+          		gpio_put(SEL3_OUT, 0);
+
+          		// DIRECTION 3 DATA
+          		gpio_put(DIR1_OUT, 1);
+          		gpio_put(DIR2_OUT, 1);
+          		gpio_put(DIR3_OUT, 0);
+
+          		gpio_set_dir_masked(bus_mask, bus_mask);
+
+          		set_bus_dir(0);
+
+          		sleep_ms(INST_DELAY);
+
+          		mem_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
+          		sleep_ms(INST_DELAY);
+
+          		ram[cur_bank][m_adr] = mem_w_op;
+
+          		gpio_set_dir_masked(bus_mask, 0);
+
+          		// SLECT 3 DATA
+          		gpio_put(SEL1_OUT, 1);
+          		gpio_put(SEL2_OUT, 1);
+          		gpio_put(SEL3_OUT, 1);
+
+          		// DIRECTION 3 DATA
+          		gpio_put(DIR1_OUT, 1);
+          		gpio_put(DIR2_OUT, 1);
+          		gpio_put(DIR3_OUT, 1);
+
+                if (DEBUG_IO) {
+                    sprintf(log_buf, "\t\tWRITE TO RAM: %08x\r\n", mem_w_op);
+                    uart_puts(UART_ID, log_buf);
+                }
+            }
+        }
+    }
+    else {
+        m_clock = 0;
+        t_clock = 0;
+
+        if (DEBUG_IO) {
+            sprintf(log_buf, "\t\tRESET MCLK TCLK\r\n");
+            uart_puts(UART_ID, log_buf);
+        }
+    }
+    /*
+
+
+
+
+
+ //    }
+	// // NEG CLOCK
+	// else {
+
+	if ((t_clock == 0) && (!rd && wr)) {
+
+        t_clock = 1;
+
+        // DIR 1
+  		gpio_put(DIR1_OUT, 0);
+  		gpio_put(DIR2_OUT, 1);
+  		gpio_put(DIR3_OUT, 1);
+
+  		// SELECT 1
+  		gpio_put(SEL1_OUT, 0);
+  		gpio_put(SEL2_OUT, 1);
+  		gpio_put(SEL3_OUT, 1);
+
+  		// GPIO BUS direction IN
+  		set_bus_dir(0);
+
+
+        sleep_us(INST_DELAY);
+
+  		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+ 				   0b11111111); // A0 - A7
+
+  		// gpio_set_dir_masked(bus_mask, 0);
+
+  		// DIR 2 ON
+  		gpio_put(DIR1_OUT, 1);
+  		gpio_put(DIR2_OUT, 0);
+  		gpio_put(DIR3_OUT, 1);
+
+  		// SELECT 2
+  		gpio_put(SEL1_OUT, 1);
+  		gpio_put(SEL2_OUT, 0);
+  		gpio_put(SEL3_OUT, 1);
+
+
+  		set_bus_dir(0);
+
+
+        sleep_us(INST_DELAY);
+
+  		high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+   					0b11111111) << 8; // A8 - A15
+
+
+  		gpio_set_dir_masked(bus_mask, 0);
+
+  		m_adr = low_adr | high_adr;
+
+  		// DIR OFF
+  		gpio_put(DIR1_OUT, 1);
+  		gpio_put(DIR2_OUT, 1);
+  		gpio_put(DIR3_OUT, 1);
+
+  		// SELECT OFF
+  		gpio_put(SEL1_OUT, 1);
+  		gpio_put(SEL2_OUT, 1);
+  		gpio_put(SEL3_OUT, 1);
+
+
+        if (DEBUG_IO) {
+            sprintf(log_buf, "\t\tMEOMRY ADDRESS: %08x\r\n", m_adr);
+            uart_puts(UART_ID, log_buf);
+        }
+    }
+	if ((t_clock == 1) && (rd && wr)) {
+		// DIR 3
+		t_clock = 0;
+		m_clock = 0;
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SLECT 3
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 0);
+
+
+		mem_r_op = ram[cur_bank][m_adr];
+
+		set_bus_dir(1);
+
+		sleep_ms(INST_DELAY);
+
+		gpio_set_dir_masked(bus_mask, bus_mask);
+		gpio_put_masked(bus_mask, (mem_r_op << BUS_GPIO_START));
+
+		sleep_ms(INST_DELAY);
+
+		// mem_r_op = 0;
+
+		// DIR OFF
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT OFF
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
+		gpio_set_dir_masked(bus_mask, 0);
+
+		if (DEBUG_IO) {
+		    sprintf(log_buf, "\t\tREAD RAM FROM CPU: %04x\r\n", mem_r_op);
+		    uart_puts(UART_ID, log_buf);
+		}
+	}
+	// }
+
+    //  clk_level = !clk_level;
+*/
+/*
+    // Memory read
+    if ((next_mclock == 1) && (!rd && wr)) {
+
+       	// DIR 1
+		gpio_put(DIR1_OUT, 0);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 1
+		gpio_put(SEL1_OUT, 0);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		// GPIO BUS direction IN
+		set_bus_dir(0);
+
+		sleep_us(INST_DELAY); // 1
+
+		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+				   0b11111111); // A0 - A7
+
+  		// gpio_set_dir_masked(bus_mask, 0);
+
+		// DIR 2 ON
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 0);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 2
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 0);
+		gpio_put(SEL3_OUT, 1);
+
+		sleep_us(INST_DELAY); // 2
+
+		set_bus_dir(0);
+
+		high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+					0b11111111) << 8; // A8 - A15
+
+
+		// DIR OFF
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT OFF
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		gpio_set_dir_masked(bus_mask, 0);
+
+		m_adr = low_adr | high_adr;
+
+
+		cur_bank = (high_adr & 0b11000000) >> 6;
+		// cur_bank = (high_adr >> 6) & 3;
+
+		// DIR 3
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SLECT 3
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 0);
+
+		mem_r_op = ram[cur_bank][m_adr];
+
+		set_bus_dir(1);
+
+		gpio_set_dir_masked(bus_mask, bus_mask);
+		gpio_put_masked(bus_mask, (mem_r_op << BUS_GPIO_START));
+
+		sleep_us(INST_DELAY); // 35
+
+		// mem_r_op = 0;
+
+		// DIR OFF
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT OFF
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		gpio_put_masked(bus_mask, (0 << BUS_GPIO_START));
+		gpio_set_dir_masked(bus_mask, 0);
+
+
+		if (DEBUG_IO) {
+    		sprintf(log_buf, "\tREAD 0x%02x ADDRSS 0x%04x\r\n", mem_r_op, m_adr);
+            uart_puts(UART_ID, log_buf);
+		}
+        next_mclock += 1;
+	}
+
+    // Memory write
+    if ((next_mclock == 2) && (rd && !wr)) {
+
+    	// DIR 1
+		gpio_put(DIR1_OUT, 0);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 1
+		gpio_put(SEL1_OUT, 0);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		// GPIO BUS direction IN
+		set_bus_dir(0);
+
+		sleep_us(INST_DELAY); // 1
+
+		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+				   0b11111111); // A0 - A7
+
+
+		// gpio_set_dir_masked(bus_mask, 0);
+
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 0);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 2 ON HIGH ADDRESS
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 0);
+		gpio_put(SEL3_OUT, 1);
+
+		// sleep_us(INST_DELAY);   // 2
+
+		set_bus_dir(0);
+
+		high_adr =
+			(((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111)
+			<< 8; // A8 - A15
+
+		// DIRECTION OFF
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT OFF
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		m_adr = low_adr | high_adr;
+
+		gpio_set_dir_masked(bus_mask, 0);
+
+
+		cur_bank = (high_adr & 0b11000000) >> 6;
+		// cur_bank = (high_adr >> 6) & 3;
+
+		// sleep_ms(0);
+
+		// SLECT 3 DATA
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 0);
+
+		// DIRECTION 3 DATA
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 0);
+
+		gpio_set_dir_masked(bus_mask, bus_mask);
+
+		sleep_us(INST_DELAY); // 3
+
+		set_bus_dir(0);
+
+		mem_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
+		ram[cur_bank][m_adr] = mem_w_op;
+
+		gpio_set_dir_masked(bus_mask, 0);
+
+
+		if (DEBUG_IO) {
+    		sprintf(log_buf, "\tWRITE 0x%02x ADDRSS 0x%04x\r\n", mem_w_op, m_adr);
+            uart_puts(UART_ID, log_buf);
+		}
+
+        next_mclock = 0;
+
+    }
+    // Device read
+    if ((next_dclock == 1) && (!rd && wr)) {
+
+
+  		// DIR 1
+		gpio_put(DIR1_OUT, 0);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 1
+		gpio_put(SEL1_OUT, 0);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		sleep_us(INST_DELAY);
+
+		// GPIO BUS direction IN
+		set_bus_dir(0);
+
+		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+				   0b11111111); // A0 - A7
+
+		// Read high address
+
+		// DIR 2
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 0);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 2
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 0);
+		gpio_put(SEL3_OUT, 1);
+
+		sleep_us(INST_DELAY);
+
+		// GPIO BUS direction IN
+		set_bus_dir(0);
+
+		high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
+
+		m_adr = low_adr | high_adr;
+
+    	if (DEBUG_IO){
+            sprintf(log_buf, "\tDEVICE READ %04x\r\n", m_adr);
+            uart_puts(UART_ID, log_buf);
+        }
+        next_dclock += 1;
+    }
+    // Device write
+    if ((next_dclock == 2) && (rd && !wr)) {
+      		// DIR 1
+		gpio_put(DIR1_OUT, 0);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 1
+		gpio_put(SEL1_OUT, 0);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		sleep_us(INST_DELAY);
+
+		// GPIO BUS direction IN
+		set_bus_dir(0);
+
+		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+				   0b11111111); // A0 - A7
+
+		// Read high address
+
+		// DIR 2
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 0);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 2
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 0);
+		gpio_put(SEL3_OUT, 1);
+
+		sleep_us(INST_DELAY);
+
+		// GPIO BUS direction IN
+		set_bus_dir(0);
+
+		high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
+
+		m_adr = low_adr | high_adr;
+
+		if (DEBUG_IO){
+            sprintf(log_buf, "\tDEVICE WRITE %04x\r\n", m_adr);
+            uart_puts(UART_ID, log_buf);
+		}
+        next_dclock = 0;
+
+    }
+    // MEMORY
+    if (!mreq && iorq) {
+
+        next_mclock = 1;
+
+        if (DEBUG_IO){
+            sprintf(log_buf, "\tMEMEORY ACCESS\r\n");
+            uart_puts(UART_ID, log_buf);
+        }
+    }
+    // DEVICE
+    else if(mreq && !iorq) {
+        next_dclock = 1;
+
+        if (DEBUG_IO){
+            sprintf(log_buf, "\tDEVICE ACCESS\r\n");
+            uart_puts(UART_ID, log_buf);
+        }
+    }
+		// DIR 1
+		gpio_put(DIR1_OUT, 0);
+		gpio_put(DIR2_OUT, 1);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 1
+		gpio_put(SEL1_OUT, 0);
+		gpio_put(SEL2_OUT, 1);
+		gpio_put(SEL3_OUT, 1);
+
+		sleep_us(INST_DELAY);
+
+		// GPIO BUS direction IN
+		set_bus_dir(0);
+
+		low_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) &
+				   0b11111111); // A0 - A7
+
+		// Read high address
+
+		// DIR 2
+		gpio_put(DIR1_OUT, 1);
+		gpio_put(DIR2_OUT, 0);
+		gpio_put(DIR3_OUT, 1);
+
+		// SELECT 2
+		gpio_put(SEL1_OUT, 1);
+		gpio_put(SEL2_OUT, 0);
+		gpio_put(SEL3_OUT, 1);
+
+		sleep_us(INST_DELAY);
+
+		// GPIO BUS direction IN
+		set_bus_dir(0);
+
+		high_adr = (((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0b11111111) << 8; // A8 - A15
+
+		m_adr = low_adr | high_adr;
+
+		sprintf(log_buf, "LOW_ADDRS 0x%02x\r\n", low_adr);
+		uart_puts(UART_ID, log_buf);
+
+		sprintf(log_buf, "HIGH_ADDRS 0x%02x\r\n", high_adr);
+		uart_puts(UART_ID, log_buf);
+
+		sprintf(log_buf, "M_ADDRS 0x%04x\r\n", m_adr);
+		uart_puts(UART_ID, log_buf);
+
+	    // MMU
+            if (low_adr == MMU_PAGE_0) {
+
+                // PAGE 0
+
+                // DIR 2
+                gpio_put(DIR1_OUT, 1);
+                gpio_put(DIR2_OUT, 1);
+                gpio_put(DIR3_OUT, 0);
+
+                // SELECT 2
+                gpio_put(SEL1_OUT, 1);
+                gpio_put(SEL2_OUT, 1);
+                gpio_put(SEL3_OUT, 0);
+
+                gpio_set_dir_masked(bus_mask, bus_mask);
+
+                sleep_us(INST_DELAY); // 3
+
+                // GPIO BUS direction IN
+                set_bus_dir(0);
+
+                io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
+                if (DEBUG_IO) {
+                sprintf(log_buf, "WRITE PAGE0 %04x\r\n", io_w_op);
+                uart_puts(UART_ID, log_buf);
+            }
+            }
+            else if (low_adr == MMU_PAGE_1) {
+                // PAGE 1
+
+                // DIR 2
+                gpio_put(DIR1_OUT, 1);
+                gpio_put(DIR2_OUT, 1);
+                gpio_put(DIR3_OUT, 0);
+
+                // SELECT 2
+                gpio_put(SEL1_OUT, 1);
+                gpio_put(SEL2_OUT, 1);
+                gpio_put(SEL3_OUT, 0);
+
+                gpio_set_dir_masked(bus_mask, bus_mask);
+
+                sleep_us(INST_DELAY); // 3
+
+                // GPIO BUS direction IN
+                set_bus_dir(0);
+
+                io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
+                if (DEBUG_IO) {
+                sprintf(log_buf, "WRITE PAGE1 %04x\r\n", io_w_op);
+                uart_puts(UART_ID, log_buf);
+            }
+
+            }
+            else if (low_adr == MMU_PAGE_2) {
+                // PAGE 2
+
+                // DIR 2
+                gpio_put(DIR1_OUT, 1);
+                gpio_put(DIR2_OUT, 1);
+                gpio_put(DIR3_OUT, 0);
+
+                // SELECT 2
+                gpio_put(SEL1_OUT, 1);
+                gpio_put(SEL2_OUT, 1);
+                gpio_put(SEL3_OUT, 0);
+
+                gpio_set_dir_masked(bus_mask, bus_mask);
+
+                sleep_us(INST_DELAY); // 3
+
+                // GPIO BUS direction IN
+                set_bus_dir(0);
+
+                io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
+                if (DEBUG_IO) {
+                sprintf(log_buf, "WRITE PAGE2 %04x\r\n", io_w_op);
+                uart_puts(UART_ID, log_buf);
+                }
+
+            }
+            else if (low_adr == MMU_PAGE_3) {
+            // PAGE 3
+
+                // DIR 2
+                gpio_put(DIR1_OUT, 1);
+                gpio_put(DIR2_OUT, 1);
+                gpio_put(DIR3_OUT, 0);
+
+                // SELECT 2
+                gpio_put(SEL1_OUT, 1);
+                gpio_put(SEL2_OUT, 1);
+                gpio_put(SEL3_OUT, 0);
+
+                gpio_set_dir_masked(bus_mask, bus_mask);
+
+                sleep_us(INST_DELAY); // 3
+
+                // GPIO BUS direction IN
+                set_bus_dir(0);
+
+                io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
+                if (DEBUG_IO) {
+                sprintf(log_buf, "WRITE PAGE3 %04x\r\n", io_w_op);
+                uart_puts(UART_ID, log_buf);
+                }
+
+
+            }
+
+            else if (low_adr == SERIAL_PORT_1) {
+
+                // UART TX
+
+                // DIR 2
+                gpio_put(DIR1_OUT, 1);
+                gpio_put(DIR2_OUT, 1);
+                gpio_put(DIR3_OUT, 0);
+
+                // SELECT 2
+                gpio_put(SEL1_OUT, 1);
+                gpio_put(SEL2_OUT, 1);
+                gpio_put(SEL3_OUT, 0);
+
+                gpio_set_dir_masked(bus_mask, bus_mask);
+
+                sleep_us(INST_DELAY); // 3
+
+                // GPIO BUS direction IN
+                set_bus_dir(0);
+
+                io_w_op = (gpio_get_all() & bus_mask) >> BUS_GPIO_START;
+
+                // tx_buff = decode_hex(io_w_op);
+                //				sprintf(tx_buff, "%c\0", io_w_op);
+                //				uart_puts(UART_ID, tx_buff);
+
+                uart_putc(UART_ID, io_w_op);
+
+
+                sprintf(log_buf, "UART WRITTE %02x\r\n", io_w_op);
+                uart_puts(UART_ID, log_buf);
+
+                // rx_data_available = false;
+                // tud_cdc_n_write(1, tx_buffer, 1);
+                // tud_cdc_n_write_flush(1);
+
+                // io_w_op = 0;
+            }
+*/
+}
+
 static uint8_t display_buf[SSD1306_BUF_LEN];
 
+
+// the main function
 int main() {
 
 	// UART
@@ -2521,7 +3087,7 @@ int main() {
 	gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
 
 	// Uart
-	uart_init(UART_ID, BAUD_RATE);
+	// uart_init(UART_ID, BAUD_RATE);
 
 	int __unused actual = uart_set_baudrate(UART_ID, BAUD_RATE); // Set BAUDRATE
 	uart_set_hw_flow(UART_ID, false, false); // Set UART flow control CTS/RTS
@@ -2531,17 +3097,28 @@ int main() {
 	uart_status_handler(); // Check UART status
 
 	uart_puts(UART_ID, "\r\n");
-	uart_puts(UART_ID, " _______  ______  ______  _______  _______  _______ \r\n");
-	uart_puts(UART_ID, "|__     ||  __  ||      ||    |  ||    ___||       |\r\n");
-	uart_puts(UART_ID, "|     __||  __  ||  --  ||       ||    ___||   -   |\r\n");
-	uart_puts(UART_ID, "|_______||______||______||__|____||_______||_______|\r\n");
+	uart_puts(UART_ID, "          ████   ████                             \r\n");
+	uart_puts(UART_ID, "         █░░░ █ █░░░██                            \r\n");
+	uart_puts(UART_ID, "  ██████░█   ░█░█  █░█ ███████   █████   ██████   \r\n");
+	uart_puts(UART_ID, " ░░░░██ ░ ████ ░█ █ ░█░░██░░░██ ██░░░██ ██░░░░██  \r\n");
+	uart_puts(UART_ID, "    ██   █░░░ █░██  ░█ ░██  ░██░███████░██   ░██  \r\n");
+	uart_puts(UART_ID, "   ██   ░█   ░█░█   ░█ ░██  ░██░██░░░░ ░██   ░██  \r\n");
+	uart_puts(UART_ID, "  ██████░ ████ ░ ████  ███  ░██░░██████░░██████   \r\n");
+	uart_puts(UART_ID, " ░░░░░░  ░░░░   ░░░░  ░░░   ░░  ░░░░░░  ░░░░░░    \r\n");
+	uart_puts(UART_ID, "\r\n");
+
+	// uart_puts(UART_ID, " _______  ______  ______  _______  _______  _______ \r\n");
+	// uart_puts(UART_ID, "|__     ||  __  ||      ||    |  ||    ___||       |\r\n");
+	// uart_puts(UART_ID, "|     __||  __  ||  --  ||       ||    ___||   -   |\r\n");
+	// uart_puts(UART_ID, "|_______||______||______||__|____||_______||_______|\r\n");
+
 	uart_puts(UART_ID, "\r\n");
 	uart_puts(UART_ID, "z80neo - TurBoss 2026\r\n");
 	uart_puts(UART_ID, "\r\n");
 	uart_puts(UART_ID, "Boot init\r\n");
 	uart_puts(UART_ID, "Configure CPU clock\r\n");
 
-		// Configure GPIO PIN for PWM
+	// Configure GPIO PIN for PWM
 	gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PWM);
 	uint slice_num = pwm_gpio_to_slice_num(GPIO_PWM_SIG);
 	uint channel_num = pwm_gpio_to_channel(GPIO_PWM_SIG);
@@ -2550,16 +3127,15 @@ int main() {
 
 	// Target a reasonable wrap value for good resolution
 	uint32_t target_wrap = PWM_WRAP;
-	float frequency_hz = 8000.0f; // 8000.0f = 8 Khz (yes :)
-	float system_clock =
-		clock_get_hz(clk_sys); // 150Mhz default pico 2 clock speed
+	float frequency_hz = 10.0f; // 8000.0f = 8 Khz (yes :)
+	float system_clock = clock_get_hz(clk_sys); // 150Mhz default pico 2 clock speed
 
 	// Calculate required clock divider
 	float clock_divider = system_clock / (frequency_hz * (target_wrap + 1));
 
 	// Constrain divider to valid range (1-255)
-	if (clock_divider < 1.0f) {
-		clock_divider = 1.0f;
+	if (clock_divider < 10.0f) {
+		clock_divider = 10.0f;
 		target_wrap =
 			(uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
 	} else if (clock_divider > 255.0f) {
@@ -2580,6 +3156,11 @@ int main() {
 	pwm_config_set_clkdiv(&config, clock_divider);
 	pwm_config_set_wrap(&config, target_wrap);
 	pwm_init(slice_num, &config, true);
+
+	//Configure pwm irq
+	pwm_clear_irq(slice_num);
+	pwm_set_irq_enabled(slice_num, true);
+	irq_set_exclusive_handler(PWM_IRQ_WRAP, pwm_irq_handler);
 
 	uart_puts(UART_ID, "Initialize SD card\r\n");
 
@@ -2656,10 +3237,10 @@ int main() {
 	//
 	//
 
-	uart_puts(UART_ID, "Clear banks\r\n");
+	// uart_puts(UART_ID, "Clear banks\r\n");
 	cur_bank = 0;
 
-	for (uint8_t pgm = 0; pgm < MAX_BANKS; pgm++) {
+	for (uint8_t pgm = 0; pgm <= MAX_BANKS; pgm++) {
 		clear_bank(pgm);
 	}
 
@@ -2686,7 +3267,7 @@ int main() {
 
 	load_init_progs();
 	sleep_ms(DISPLAY_DELAY_LONG);
-	uart_puts(UART_ID, "Ok!\r\n");
+	uart_puts(UART_ID, "\r\nOk!\r\n");
 	sleep_ms(DISPLAY_DELAY_LONG);
 
 	clear_screen();
@@ -2814,9 +3395,9 @@ int main() {
 
 	// MREQ and IORQ signal handlers
 
-	gpio_set_irq_enabled_with_callback(MREQ_INPUT, GPIO_IRQ_EDGE_FALL, true,
+	gpio_set_irq_enabled_with_callback(MREQ_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true,
 									   &bus_callback);
-	gpio_set_irq_enabled(IORQ_INPUT, GPIO_IRQ_EDGE_FALL, true);
+	gpio_set_irq_enabled(IORQ_INPUT, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true);
 
 	// Uart0 RX IRQ
 
@@ -2835,28 +3416,43 @@ int main() {
 	reset_release();
 	// Enable CPU clock
 
-	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
 
 	uart_puts(UART_ID, "Start CPU clock\r\n");
+	pwm_set_chan_level(slice_num, channel_num, duty_cycle);
 
 
 	uart_puts(UART_ID, "\r\nSystem UP!\r\n");
 
+	//enable pwm
+	irq_set_enabled(PWM_IRQ_WRAP, true);
 
-
+	// main loop
 	while (true) {
 
 		if (disabled) {
 			reset_hold();
 
 			gpio_put(LED_PIN, 1);
+
+			// stop wpm
 			pwm_set_chan_level(slice_num, channel_num, 0);
+			irq_set_enabled(slice_num, false);
+
+			t_clock = 0;
+			m_clock = 0;
+
 			confirmed = true;
+
+
+
 
 			while (disabled) {
 			};
 
+			// enable wpm
 			pwm_set_chan_level(slice_num, channel_num, duty_cycle);
+			irq_set_enabled(slice_num, true);
+
 			gpio_put(LED_PIN, 0);
 
 			reset_release();
