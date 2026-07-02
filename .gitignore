@@ -16,3 +16,4 @@ hardware/gerber/
 hardware/main-backups
 .settings/
 .vscode/
+.metadata/
