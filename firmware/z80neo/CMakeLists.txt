@@ -8,14 +8,14 @@ add_executable(z80neo
  src/utils.c
  src/display.c
  src/memory.c
+ src/i2c_ee.c
+ src/flash_disk.c
  src/main.c
     )
 
 target_include_directories(z80neo PRIVATE
  ${INCLUDE_DIR}
     )
-
-
 
 # pull in common dependencies
 target_link_libraries(z80neo
@@ -27,8 +27,6 @@ target_link_libraries(z80neo
  hardware_adc
  hardware_pwm
  hardware_spi
- hardware_pio
- hardware_dma
  hardware_uart
  hardware_irq
  hardware_resets

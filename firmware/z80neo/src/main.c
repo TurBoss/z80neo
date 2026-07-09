@@ -38,6 +38,7 @@
 
 // Screen
 #include "ssd1306_i2c.h"
+#include "i2c_ee.h"
 
 // Boot logo
 #include "logo.h"
@@ -45,6 +46,9 @@
 // Project modules
 #include "display.h"
 #include "memory.h"
+
+
+float CPU_SPEED = 120000.0f;
 
 // ===========================================================================
 // main()
@@ -59,7 +63,7 @@ int main(void) {
 
     // PICO
     stdio_init_all();
-    sleep_ms(500);
+    sleep_ms(100);
 
     // useful information for picotool
     bi_decl(bi_2pins_with_func(PICO_I2C_SDA_PIN, PICO_I2C_SCL_PIN, GPIO_FUNC_I2C));
@@ -112,7 +116,7 @@ int main(void) {
 
     // Calculate clock divider
     uint32_t target_wrap  = PWM_WRAP;
-    float frequency_hz    = 10000.0f;   // Hz Z80 clock
+    float frequency_hz    = CPU_SPEED;   // Hz Z80 clock
     float system_clock    = clock_get_hz(clk_sys);
 
     float clock_divider = system_clock / (frequency_hz * (target_wrap + 1));
@@ -134,12 +138,7 @@ int main(void) {
     pwm_config_set_clkdiv(&config, clock_divider);
     pwm_config_set_wrap(&config, target_wrap);
     pwm_init(slice_num, &config, true);
-
-    // Configure PWM IRQ
-    pwm_clear_irq(slice_num);
-    pwm_set_irq_enabled(slice_num, true);
-    irq_set_exclusive_handler(PWM_IRQ_WRAP, pwm_irq_handler);
-
+    pwm_set_chan_level(slice_num, channel_num, 0);  // off until ready
     uart_puts(UART_ID, "Initialize SD card\r\n");
 
     // SD card config
@@ -203,7 +202,7 @@ int main(void) {
 
     // Clear banks
     cur_bank = 0;
-    for (uint8_t pgm = 0; pgm <= MAX_BANKS; pgm++) {
+    for (uint8_t pgm = 0; pgm < MAX_BANKS; pgm++) {
         clear_bank(pgm);
     }
 
@@ -224,6 +223,7 @@ int main(void) {
     sleep_ms(DISPLAY_DELAY_LONG);
 
     load_init_progs();
+    i2c_ee_init();
     sleep_ms(DISPLAY_DELAY_LONG);
     uart_puts(UART_ID, "\r\nOk!\r\n");
     sleep_ms(DISPLAY_DELAY_LONG);
@@ -267,24 +267,24 @@ int main(void) {
     gpio_set_outover(SEL3_OUT, GPIO_OVERRIDE_NORMAL);
     gpio_put(SEL3_OUT, 1);
 
-    // Bus direction
+    // Bus direction — DIR=0 for Z80→Pico (we read addr/data from Z80)
     gpio_init(DIR1_OUT);
     gpio_set_function(DIR1_OUT, GPIO_FUNC_SIO);
     gpio_set_dir(DIR1_OUT, GPIO_OUT);
     gpio_set_outover(DIR1_OUT, GPIO_OVERRIDE_NORMAL);
-    gpio_put(DIR1_OUT, 1);
+    gpio_put(DIR1_OUT, 0);  // Z80→Pico for addr low
 
     gpio_init(DIR2_OUT);
     gpio_set_function(DIR2_OUT, GPIO_FUNC_SIO);
     gpio_set_dir(DIR2_OUT, GPIO_OUT);
     gpio_set_outover(DIR2_OUT, GPIO_OVERRIDE_NORMAL);
-    gpio_put(DIR2_OUT, 1);
+    gpio_put(DIR2_OUT, 0);  // back to 0
 
     gpio_init(DIR3_OUT);
     gpio_set_function(DIR3_OUT, GPIO_FUNC_SIO);
     gpio_set_dir(DIR3_OUT, GPIO_OUT);
     gpio_set_outover(DIR3_OUT, GPIO_OVERRIDE_NORMAL);
-    gpio_put(DIR3_OUT, 1);
+    gpio_put(DIR3_OUT, 0);  // default input, ISR toggles for reads
 
     // CPU MREQ
     gpio_init(MREQ_INPUT);
@@ -338,43 +338,33 @@ int main(void) {
     irq_set_enabled(UART_IRQ, true);
     uart_set_irq_enables(UART_ID, true, false);
 
-    // Enable CPU clock (PWM)
+    // Enable CPU clock (PWM) — no ISR, just clock output
     uart_puts(UART_ID, "Start CPU clock\r\n");
     pwm_set_chan_level(slice_num, channel_num, duty_cycle);
     uart_puts(UART_ID, "\r\nSystem UP!\r\n");
-
-    irq_set_enabled(PWM_IRQ_WRAP, true);
+    sleep_ms(10);  // allow UART drain before Z80 starts
 
     reset_release();
 
-    // Main loop
+    // Main loop — poll Z80 bus directly
     while (true) {
         if (disabled) {
             reset_hold();
             gpio_put(LED_PIN, 1);
-
-            // Stop PWM
             pwm_set_chan_level(slice_num, channel_num, 0);
-            irq_set_enabled(slice_num, false);
-
             t_clock = 0;
             m_clock = 0;
-
             confirmed = true;
-
-            while (disabled) {
-            };
-
-            // Re-enable PWM
+            while (disabled) {};
             pwm_set_chan_level(slice_num, channel_num, duty_cycle);
-            irq_set_enabled(slice_num, true);
-
             gpio_put(LED_PIN, 0);
             reset_release();
         }
 
+        // Poll Z80 bus aggressively, flush UART every 100 polls
+        for (int i = 0; i < 100; i++) {
+            bus_poll();
+        }
         uart_status_handler();
-        tight_loop_contents();
-        // cdc_task();
     }
 }

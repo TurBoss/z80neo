@@ -23,7 +23,7 @@
 // ---------------------------------------------------------------------------
 
 #define DEBUG_LOAD true
-#define DEBUG_IO   false
+#define DEBUG_IO   true
 #define ADC_DEBUG_DELAY 100
 
 extern volatile bool DEBUG_ADC;
@@ -45,10 +45,15 @@ extern volatile bool DEBUG_ADC;
 // MMU
 // ---------------------------------------------------------------------------
 
+// IO ports for the 4 virtual pages (16 KB each)
 #define MMU_PAGE_0 0xF0
 #define MMU_PAGE_1 0xF1
 #define MMU_PAGE_2 0xF2
 #define MMU_PAGE_3 0xF3
+
+// OS physical page range: 0x20–0x3F (32 pages × 16 KB = 512 KB)
+#define MMU_PHYS_START 0x20
+#define MMU_PHYS_PAGES 32
 
 // ---------------------------------------------------------------------------
 // SIO
@@ -64,7 +69,7 @@ extern volatile bool DEBUG_ADC;
 // ---------------------------------------------------------------------------
 
 #define PWM_WRAP   65535   // 16-bit resolution
-#define INST_DELAY 10       // μs bus settling (0 for ≥100 kHz)
+#define INST_DELAY 0       // μs bus settling (0 for ≥500 kHz)
 
 // ---------------------------------------------------------------------------
 // GPIO pin definitions
@@ -160,16 +165,17 @@ extern volatile uint8_t serial_status_1;
 extern volatile uint8_t serial_status_2;
 
 // UART TX buffer (non-blocking send from IRQ context)
-#define UART_TX_BUF_SIZE 64
-extern uint8_t  tx_buffer[UART_TX_BUF_SIZE];
-extern uint8_t  tx_head;
-extern uint8_t  tx_tail;
-extern uint8_t  tx_count;
+#define UART_TX_BUF_SIZE 1024
+extern uint8_t   tx_buffer[UART_TX_BUF_SIZE];
+extern uint16_t  tx_head;
+extern uint16_t  tx_tail;
+extern uint16_t  tx_count;
 
 // Debug counters
 extern uint32_t d_adr;
 extern uint32_t dr_op;
 extern uint32_t dw_op;
+extern uint32_t io_op;
 
 // Bus control
 extern bool mreq;
@@ -234,8 +240,8 @@ void uart_status_handler(void);
 // GPIO / bus callbacks
 void bus_callback(uint pin, uint32_t events);
 
-// PWM / IRQ handler
-void pwm_irq_handler(void);
+// Bus poll — main-loop Z80 bus handler
+void bus_poll(void);
 
 // SD card
 int   sd_read_init(void);

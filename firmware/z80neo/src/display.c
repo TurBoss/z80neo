@@ -17,6 +17,7 @@
 #include "tf_card.h"
 
 #include "display.h"
+#include "flash_disk.h"
 #include "memory.h"
 #include "logo.h"
 #include "utils.h"
@@ -336,6 +337,7 @@ void wait_for_button(void) {
 bool wait_for_yes_no_button(void) {
     button_state button;
     while (true) {
+        fd_process_flush();
         button = read_button_state();
         if (button == OK) {
             wait_for_button_release();
@@ -362,6 +364,7 @@ void display_loop(void) {
         uint16_t adc = adc_read();
 
         while (true) {
+        fd_process_flush();
             adc_select_input(0);
             print_string(0, 1, "ADC:%03x       ", adc_read());
             sleep_ms(10);
@@ -369,9 +372,10 @@ void display_loop(void) {
     }
 
     while (true) {
+        fd_process_flush();
         if (cur_disp_mode != OFF) {
-            sprintf(text_buffer, "%1x:%04x O:%02x I:%02x", cur_bank, d_adr,
-                    dr_op, dw_op);
+            sprintf(text_buffer, "R%04lx W%04lx IO%04lx",
+                    dr_op & 0xFFFF, dw_op & 0xFFFF, io_op & 0xFFFF);
             WriteString(buf, 0, 0, text_buffer);
             render(buf, &frame_area);
         }
