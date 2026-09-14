@@ -25,30 +25,47 @@
 #include <hardware/spi.h>
 #include <hardware/uart.h>
 #include <hardware/vreg.h>
+#include <hardware/psram.h>
+
+// This firmware drives GPIO30-47 (RP2350B / BB48).  Building for the RP2350A
+// (e.g. PICO_BOARD=pico2) caps NUM_BANK0_GPIOS at 30 and silently disables
+// every gpio_*/PIO call above GPIO29.
+#if defined(PICO_RP2350A) && PICO_RP2350A
+#error "z80neo requires the RP2350B (48-GPIO) package: build with PICO_BOARD=z80neo_bb48"
+#endif
+
+// PIO clock generator (replaces PWM to free GPIO33/RESET)
+#include "z80clock.pio.h"
 
 // SD Card
 #include "ff.h"
 #include "tf_card.h"
 
-// Utils
-#include "utils.h"
-
-// USB Serial
-// #include "cdc.h"
-
 // Screen
 #include "ssd1306_i2c.h"
-#include "i2c_ee.h"
 
 // Boot logo
 #include "logo.h"
 
 // Project modules
 #include "display.h"
+#include "cpm_disk.h"
 #include "memory.h"
+#include "i2c_ee.h"
+#include "z80bus_pio.h"
 
+float CPU_SPEED = 256000.0f;   // Z80 clock (PIO generator on GPIO32); INI may override
 
-float CPU_SPEED = 120000.0f;
+// Print the configured Z80 clock to the boot log (MHz + Hz).
+static void log_cpu_clock(void) {
+    uint32_t hz = (uint32_t)(CPU_SPEED + 0.5f);
+    char b[64];
+    snprintf(b, sizeof(b), "Z80 clock: %lu.%03lu MHz (%lu Hz)\r\n",
+             (unsigned long)(hz / 1000000u),
+             (unsigned long)((hz % 1000000u) / 1000u),
+             (unsigned long)hz);
+    uart_puts(UART_ID, b);
+}
 
 // ===========================================================================
 // main()
@@ -57,9 +74,8 @@ float CPU_SPEED = 120000.0f;
 int main(void) {
     // UART
     uart_init(UART_ID, BAUD_RATE);
+    sleep_ms(50);
 
-    // USB
-    // usb_cdc_init();
 
     // PICO
     stdio_init_all();
@@ -80,9 +96,10 @@ int main(void) {
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
-    // Uart GPIO Init
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+	    // Uart GPIO Init
+	    gpio_pull_up(UART_RX_PIN);  // prevent floating RX → garbage null bytes
+	    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+	    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
 
     // Uart config
     int __unused actual = uart_set_baudrate(UART_ID, BAUD_RATE);
@@ -93,52 +110,37 @@ int main(void) {
 
     uart_status_handler();
 
+    uart_puts(UART_ID, "\r\n");
+
     // Boot banner
     uart_puts(UART_ID, "\r\n");
-    uart_puts(UART_ID, "          ████   ████                             \r\n");
-    uart_puts(UART_ID, "         █░░░ █ █░░░██                            \r\n");
-    uart_puts(UART_ID, "  ██████░█   ░█░█  █░█ ███████   █████   ██████   \r\n");
-    uart_puts(UART_ID, " ░░░░██ ░ ████ ░█ █ ░█░░██░░░██ ██░░░██ ██░░░░██  \r\n");
-    uart_puts(UART_ID, "    ██   █░░░ █░██  ░█ ░██  ░██░███████░██   ░██  \r\n");
-    uart_puts(UART_ID, "   ██   ░█   ░█░█   ░█ ░██  ░██░██░░░░ ░██   ░██  \r\n");
-    uart_puts(UART_ID, "  ██████░ ████ ░ ████  ███  ░██░░██████░░██████   \r\n");
-    uart_puts(UART_ID, " ░░░░░░  ░░░░   ░░░░  ░░░   ░░  ░░░░░░  ░░░░░░    \r\n");
-    uart_puts(UART_ID, "\r\n");
-    uart_puts(UART_ID, "z80neo - TurBoss 2026\r\n");
+    uart_puts(UART_ID, "          @@@@   @@@@                             \r\n");
+    uart_puts(UART_ID, "         @    @ @   @@                            \r\n");
+    uart_puts(UART_ID, "  @@@@@@ @    @ @  @ @ @@@@@@@   @@@@@   @@@@@@   \r\n");
+    uart_puts(UART_ID, "     @@   @@@@  @ @  @  @@   @@ @@   @@ @@    @@  \r\n");
+    uart_puts(UART_ID, "    @@   @    @ @@   @  @@   @@ @@@@@@@ @@    @@  \r\n");
+    uart_puts(UART_ID, "   @@    @    @ @    @  @@   @@ @@      @@    @@  \r\n");
+    uart_puts(UART_ID, "  @@@@@@  @@@@   @@@@  @@@   @@  @@@@@@  @@@@@@   \r\n");
+    uart_puts(UART_ID, "                                                  \r\n");
+    uart_puts(UART_ID, "\r\nz80neo - TurBoss 2026\r\n");
     uart_puts(UART_ID, "\r\n");
     uart_puts(UART_ID, "Boot init\r\n");
     uart_puts(UART_ID, "Configure CPU clock\r\n");
 
-    // Configure GPIO PIN for PWM
-    gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PWM);
-    uint slice_num   = pwm_gpio_to_slice_num(GPIO_PWM_SIG);
-    uint channel_num = pwm_gpio_to_channel(GPIO_PWM_SIG);
-
-    // Calculate clock divider
-    uint32_t target_wrap  = PWM_WRAP;
-    float frequency_hz    = CPU_SPEED;   // Hz Z80 clock
-    float system_clock    = clock_get_hz(clk_sys);
-
-    float clock_divider = system_clock / (frequency_hz * (target_wrap + 1));
-
-    if (clock_divider < 10.0f) {
-        clock_divider = 10.0f;
-        target_wrap   = (uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
-    } else if (clock_divider > 255.0f) {
-        clock_divider = 255.0f;
-        target_wrap   = (uint32_t)(system_clock / (frequency_hz * clock_divider)) - 1;
-        if (target_wrap > 65535)
-            target_wrap = 65535;
-    }
-
-    int duty_cycle = target_wrap * 0.50;   // 50% duty cycle
-
-    // Configure PWM
-    pwm_config config = pwm_get_default_config();
-    pwm_config_set_clkdiv(&config, clock_divider);
-    pwm_config_set_wrap(&config, target_wrap);
-    pwm_init(slice_num, &config, true);
-    pwm_set_chan_level(slice_num, channel_num, 0);  // off until ready
+    // PIO clock generator — clean 50% duty at any frequency
+    gpio_set_drive_strength(GPIO_PWM_SIG, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_slew_rate(GPIO_PWM_SIG, GPIO_SLEW_RATE_FAST);
+    gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PIO1);  // Z80 clock pin → PIO1
+    PIO clock_pio = pio1;
+    uint clock_sm = 2;
+    // On RP2350B each PIO instance can only address 32 pins, either 0-31 or
+    // 16-47.  Select the upper window when the clock pin is >= 32; this must
+    // happen before pio_add_program/pio_sm_init (pio_sm_set_config does not set
+    // the GPIO base for you), otherwise the SET base wraps and drives pin 0.
+    pio_set_gpio_base(clock_pio, (GPIO_PWM_SIG >= 32) ? 16 : 0);
+    uint clock_off = pio_add_program(clock_pio, &z80clock_program);
+    z80clock_program_init(clock_pio, clock_sm, clock_off, CPU_SPEED, GPIO_PWM_SIG);
+    log_cpu_clock();
     uart_puts(UART_ID, "Initialize SD card\r\n");
 
     // SD card config
@@ -158,9 +160,9 @@ int main(void) {
     if (!spi_configured) {
         while (true) {
             gpio_put(LED_PIN, 1);
-            sleep_ms(150);
+            for(volatile int d=0;d<150*30000;d++){};
             gpio_put(LED_PIN, 0);
-            sleep_ms(100);
+            for(volatile int d=0;d<100*30000;d++){};
         }
     }
 
@@ -175,6 +177,9 @@ int main(void) {
     uart_puts(UART_ID, "Init Keys\r\n");
     adc_init();
     adc_gpio_init(ADC_KEYS_INPUT);
+
+    // Init I2C EEPROM emulation (port 0xD1)
+    i2c_ee_init();
 
     // Init display
     uart_puts(UART_ID, "Init Display\r\n");
@@ -223,7 +228,11 @@ int main(void) {
     sleep_ms(DISPLAY_DELAY_LONG);
 
     load_init_progs();
-    i2c_ee_init();
+    // load_file() releases the Z80 reset when it finishes.  Re-assert it here
+    // so the Z80 stays stopped until the PIO bus handler is fully initialized
+    // and ready to service cycles — otherwise it runs freely for ~100ms with a
+    // floating data bus and its PC derails before the first real fetch.
+    reset_hold();
     sleep_ms(DISPLAY_DELAY_LONG);
     uart_puts(UART_ID, "\r\nOk!\r\n");
     sleep_ms(DISPLAY_DELAY_LONG);
@@ -235,6 +244,30 @@ int main(void) {
     sleep_ms(DISPLAY_DELAY_LONG);
 
     show_info();
+
+#ifdef PSRAM_ENABLE
+    uart_puts(UART_ID, "PSRAM...");
+    psram_base = NULL;
+    bool ok = psram_is_available();
+    uart_puts(UART_ID, ok ? "OK\r\n" : "NOPE\r\n");
+    if (ok) {
+        psram_base = (uint8_t *)(XIP_BASE + 0x1000000);
+        for (uint8_t p = MAX_BANKS; p < TOTAL_BANKS; p++)
+            clear_bank(p);
+        uart_puts(UART_ID, "PSRAM OK\r\n");
+    }
+#endif
+
+    	if (cpm_disk_init()) {
+    	    char cpm_msg[48];
+    	    snprintf(cpm_msg, sizeof(cpm_msg), "CP/M disk: %u drive(s) mounted\r\n",
+    	             (unsigned)cpm_disk_count());
+    	    uart_puts(UART_ID, cpm_msg);
+    	} else {
+    	    uart_puts(UART_ID, "No CP/M disk images found — disk I/O disabled\r\n");
+    	}
+
+    post_dump();
 
     // Init GPIO bus pins
     uart_puts(UART_ID, "Init GPIO pins\r\n");
@@ -260,55 +293,66 @@ int main(void) {
     gpio_set_outover(SEL2_OUT, GPIO_OVERRIDE_NORMAL);
     gpio_put(SEL2_OUT, 1);
 
-    // Data select 0-7
+    // Data select 0-7 — HIGH DRIVE to overpower OE pullup on HC245
     gpio_init(SEL3_OUT);
     gpio_set_function(SEL3_OUT, GPIO_FUNC_SIO);
     gpio_set_dir(SEL3_OUT, GPIO_OUT);
+    gpio_set_drive_strength(SEL3_OUT, GPIO_DRIVE_STRENGTH_12MA);
     gpio_set_outover(SEL3_OUT, GPIO_OVERRIDE_NORMAL);
     gpio_put(SEL3_OUT, 1);
 
-    // Bus direction — DIR=0 for Z80→Pico (we read addr/data from Z80)
+    // Bus direction — HIGH DRIVE
     gpio_init(DIR1_OUT);
     gpio_set_function(DIR1_OUT, GPIO_FUNC_SIO);
     gpio_set_dir(DIR1_OUT, GPIO_OUT);
+    gpio_set_drive_strength(DIR1_OUT, GPIO_DRIVE_STRENGTH_12MA);
     gpio_set_outover(DIR1_OUT, GPIO_OVERRIDE_NORMAL);
-    gpio_put(DIR1_OUT, 0);  // Z80→Pico for addr low
+    gpio_put(DIR1_OUT, 0);
 
     gpio_init(DIR2_OUT);
     gpio_set_function(DIR2_OUT, GPIO_FUNC_SIO);
     gpio_set_dir(DIR2_OUT, GPIO_OUT);
+    gpio_set_drive_strength(DIR2_OUT, GPIO_DRIVE_STRENGTH_12MA);
     gpio_set_outover(DIR2_OUT, GPIO_OVERRIDE_NORMAL);
-    gpio_put(DIR2_OUT, 0);  // back to 0
+    gpio_put(DIR2_OUT, 0);
 
     gpio_init(DIR3_OUT);
     gpio_set_function(DIR3_OUT, GPIO_FUNC_SIO);
     gpio_set_dir(DIR3_OUT, GPIO_OUT);
+    gpio_set_drive_strength(DIR3_OUT, GPIO_DRIVE_STRENGTH_12MA);
     gpio_set_outover(DIR3_OUT, GPIO_OVERRIDE_NORMAL);
-    gpio_put(DIR3_OUT, 0);  // default input, ISR toggles for reads
+    gpio_put(DIR3_OUT, 0);
 
-    // CPU MREQ
-    gpio_init(MREQ_INPUT);
-    gpio_set_function(MREQ_INPUT, GPIO_FUNC_SIO);
-    gpio_set_dir(MREQ_INPUT, GPIO_IN);
-    gpio_set_inover(MREQ_INPUT, GPIO_OVERRIDE_NORMAL);
+ 	    // CPU MREQ — must be PIO0 function so the PIO bus SMs can read it via
+	    // JMP PIN / WAIT.  gpio_get() still reads the pad via SIO regardless
+	    // of function select.  Pull-up prevents false triggers during idle.
+	    gpio_init(MREQ_INPUT);
+	    gpio_set_function(MREQ_INPUT, GPIO_FUNC_PIO0);
+	    gpio_set_dir(MREQ_INPUT, GPIO_IN);
+	    gpio_pull_up(MREQ_INPUT);
+	    gpio_set_inover(MREQ_INPUT, GPIO_OVERRIDE_NORMAL);
 
-    // CPU RD
-    gpio_init(RD_INPUT);
-    gpio_set_function(RD_INPUT, GPIO_FUNC_SIO);
-    gpio_set_dir(RD_INPUT, GPIO_IN);
-    gpio_set_inover(RD_INPUT, GPIO_OVERRIDE_NORMAL);
+	    // CPU RD
+	    gpio_init(RD_INPUT);
+	    gpio_set_function(RD_INPUT, GPIO_FUNC_SIO);
+	    gpio_set_dir(RD_INPUT, GPIO_IN);
+	    gpio_pull_up(RD_INPUT);
+	    gpio_set_inover(RD_INPUT, GPIO_OVERRIDE_NORMAL);
 
-    // CPU IORQ
-    gpio_init(IORQ_INPUT);
-    gpio_set_function(IORQ_INPUT, GPIO_FUNC_SIO);
-    gpio_set_dir(IORQ_INPUT, GPIO_IN);
-    gpio_set_inover(IORQ_INPUT, GPIO_OVERRIDE_NORMAL);
+	    // CPU IORQ — PIO0 function so the io SM's WAIT GPIO 22 can read it.
+	    // MUST have pull-up: glitches cause false I/O cycles.
+	    gpio_init(IORQ_INPUT);
+	    gpio_set_function(IORQ_INPUT, GPIO_FUNC_PIO0);
+	    gpio_set_dir(IORQ_INPUT, GPIO_IN);
+	    gpio_pull_up(IORQ_INPUT);
+	    gpio_set_inover(IORQ_INPUT, GPIO_OVERRIDE_NORMAL);
 
-    // CPU WR
-    gpio_init(WR_INPUT);
-    gpio_set_function(WR_INPUT, GPIO_FUNC_SIO);
-    gpio_set_dir(WR_INPUT, GPIO_IN);
-    gpio_set_inover(WR_INPUT, GPIO_OVERRIDE_NORMAL);
+	    // CPU WR
+	    gpio_init(WR_INPUT);
+	    gpio_set_function(WR_INPUT, GPIO_FUNC_SIO);
+	    gpio_set_dir(WR_INPUT, GPIO_IN);
+	    gpio_pull_up(WR_INPUT);
+	    gpio_set_inover(WR_INPUT, GPIO_OVERRIDE_NORMAL);
 
     // Reset bus / address state
     m_adr     = 0;
@@ -323,7 +367,7 @@ int main(void) {
     multicore_launch_core1(display_loop);
 
     while (DEBUG_ADC) {
-        sleep_ms(1000);
+        for(volatile int d=0;d<1000*30000;d++){};
     }
 
     gpio_set_dir_masked(bus_mask, 0);
@@ -332,39 +376,55 @@ int main(void) {
     gpio_put(SEL2_OUT, 1);
     gpio_put(SEL3_OUT, 1);
 
-    // UART0 RX IRQ
+    // Ensure WAIT is HIGH before the PIO SMs take the pin
+    // WAIT is open-drain (pull-up held HIGH, PIO drives LOW to assert)
+    gpio_init(4); gpio_set_dir(4, GPIO_IN); gpio_pull_up(4);
+
+    // UART0 RX — polled in main loop, no IRQ
     int UART_IRQ = UART_ID == uart0 ? UART0_IRQ : UART1_IRQ;
-    irq_set_exclusive_handler(UART_IRQ, on_uart_rx);
-    irq_set_enabled(UART_IRQ, true);
-    uart_set_irq_enables(UART_ID, true, false);
+    irq_set_enabled(UART_IRQ, false);
+    uart_set_irq_enables(UART_ID, false, false);
 
-    // Enable CPU clock (PWM) — no ISR, just clock output
-    uart_puts(UART_ID, "Start CPU clock\r\n");
-    pwm_set_chan_level(slice_num, channel_num, duty_cycle);
     uart_puts(UART_ID, "\r\nSystem UP!\r\n");
-    sleep_ms(10);  // allow UART drain before Z80 starts
+    sleep_ms(10);
 
+    z80bus_pio_init((uint32_t)(CPU_SPEED / 1000.0f));
+    // PIO SMs start with WAIT released (SET PINS, 1).
+    // They will assert WAIT as soon as Z80 starts its first bus cycle.
+    sleep_ms(10);
+    // Wait a short time for MREQ to go HIGH (clean start).  Bounded so we can
+    // never deadlock if the Z80 is already running/asserting MREQ.
+    { int mq = 10000; while (!gpio_get(MREQ_INPUT) && --mq) tight_loop_contents(); }
     reset_release();
+    system_up = true;
 
-    // Main loop — poll Z80 bus directly
     while (true) {
         if (disabled) {
-            reset_hold();
-            gpio_put(LED_PIN, 1);
-            pwm_set_chan_level(slice_num, channel_num, 0);
-            t_clock = 0;
-            m_clock = 0;
+            z80bus_pio_suspend();
+            pio_sm_set_enabled(clock_pio, clock_sm, false);
+            reset_hold(); gpio_put(LED_PIN, 1);
             confirmed = true;
             while (disabled) {};
-            pwm_set_chan_level(slice_num, channel_num, duty_cycle);
-            gpio_put(LED_PIN, 0);
-            reset_release();
+            pio_sm_set_enabled(clock_pio, clock_sm, true);
+            gpio_put(LED_PIN, 0); reset_release();
+            z80bus_pio_resume();
         }
-
-        // Poll Z80 bus aggressively, flush UART every 100 polls
-        for (int i = 0; i < 100; i++) {
-            bus_poll();
+        z80bus_pio_poll();
+        // Timing-trace dump/reset requested from gdb.
+        if (z80bus_diag_reset) { z80bus_diag_reset = false; z80bus_pio_diag_reset(); }
+        if (z80bus_diag_dump)  { z80bus_diag_dump = false;  z80bus_pio_dump(); }
+        // Flush 1 UART byte per poll
+        if (tx_count > 0 && uart_is_writable(UART_ID)) {
+            echo_track_tx(tx_buffer[tx_tail]);
+            uart_putc(UART_ID, tx_buffer[tx_tail]);
+            tx_tail = (tx_tail + 1) % UART_TX_BUF_SIZE;
+            tx_count--;
+            serial_status_1 = (tx_count < UART_TX_BUF_SIZE) ? (serial_status_1 | 0x02) : (serial_status_1 & ~0x02);
         }
-        uart_status_handler();
+        // Poll UART RX into the software buffer.  Do NOT drop bytes while TX is
+        // in flight: the CCP echoes every typed character, and discarding RX
+        // during that echo throws away the user's next character (fast typing /
+        // paste loses input).  The terminal must run with local echo OFF.
+        uart_rx_poll();
     }
 }

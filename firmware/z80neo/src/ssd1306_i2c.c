@@ -137,7 +137,8 @@ void render(uint8_t *display_buf, struct render_area *area) {
     };
     
     SSD1306_send_cmd_list(cmds, count_of(cmds));
-    SSD1306_send_buf(display_buf, area->buflen);
+    // Offset buffer to match the start page (each page = SSD1306_WIDTH bytes)
+    SSD1306_send_buf(display_buf + (area->start_page * SSD1306_WIDTH), area->buflen);
 }
 
 void SetPixel(uint8_t *display_buf, int x,int y, bool on) {

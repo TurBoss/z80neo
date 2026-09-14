@@ -1,0 +1,30 @@
+; z80clock.pio - Z80 clock generator on GPIO6 (GPIO_PWM_SIG)
+; Clean 50% duty cycle at any frequency via PIO, replaces PWM
+
+.program z80clock
+    SET PINS, 1        ; CLK HIGH
+    SET PINS, 0        ; CLK LOW
+
+% c-sdk {
+#include "hardware/clocks.h"
+#include "hardware/pio.h"
+
+static inline void z80clock_program_init(PIO pio, unsigned int sm,
+                                          unsigned int offset,
+                                          float freq_hz,
+                                          unsigned int pin) {
+    pio_sm_config c = z80clock_program_get_default_config(offset);
+    sm_config_set_set_pins(&c, pin, 1);  // SET base = pin, 1 pin
+    sm_config_set_out_shift(&c, false, false, 0);
+
+    // 2 instructions per clock cycle → PIO clock = freq_hz * 2
+    uint32_t sys_hz = clock_get_hz(clk_sys);
+    float div = (float)sys_hz / (freq_hz * 2.0f);
+    if (div < 1.0f) div = 1.0f;
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

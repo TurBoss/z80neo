@@ -1,0 +1,52 @@
+; z80bus_pio.pio - dual-SM Z80 bus capture
+;
+; SM0 (mem): JMP_PIN = GPIO20 (MREQ), SET pins = GPIO7  -> Z80 WAIT
+; SM1 (io):  JMP_PIN = GPIO22 (IORQ), SET pins = GPIO4 -> Z80 WAIT
+;
+; Both WAIT pins are wired together on the board to the Z80 WAIT input.  The
+; net is driven OPEN-DRAIN: a pin either drives it LOW (assert) or goes
+; high-Z (release), with a pull-up holding it HIGH.  Push-pull would let the
+; two SMs fight whenever one releases while the other still holds WAIT low.
+;
+; IMPORTANT: only JMP/IN/PUSH/PULL/SET are used here.  The pioasm version
+; bundled with this SDK generates WRONG encodings for the WAIT instruction
+; (e.g. "WAIT 1 PIN, 0" becomes a wait on GPIO 0 instead of the JMP pin), so
+; we implement the "wait for pin level" using JMP PIN polling loops instead.
+;
+; A bus cycle starts when MREQ (SM0) or IORQ (SM1) goes LOW at the end of T1.
+; The PIO asserts WAIT immediately so the Z80 stretches into WAIT states and
+; the whole bus is frozen.  A capture word is pushed to the RX FIFO; the ARM
+; services the cycle and replies through the TX FIFO; the PIO then releases
+; WAIT and polls for the cycle to really finish (signal back HIGH) before
+; re-arming.  Re-arming is keyed to the actual end of the cycle, so the code
+; is correct at any Z80 clock frequency.
+;
+; An M1 opcode fetch asserts both MREQ and IORQ, so the io SM is triggered by
+; it too.  The ARM examines the captured control bits (via the live pins) and
+; skips M1 cycles in handle_iorq - the mem SM services the fetch exactly once.
+
+.program z80bus_pio_mem
+    SET PINDIRS, 0          ; release WAIT (high-Z, pull-up holds it HIGH)
+idle:
+    JMP PIN idle            ; wait for MREQ (jmp pin) to go LOW
+    SET PINS, 0             ; output latch LOW while still high-Z
+    SET PINDIRS, 1          ; drive WAIT LOW (assert), freeze the bus
+    IN PINS, 32             ; capture data bus + control flags (autopush)
+    PULL BLOCK              ; wait for ARM acknowledge
+    SET PINDIRS, 0          ; release WAIT (high-Z)
+wait_high:
+    JMP PIN idle            ; MREQ HIGH again? cycle really over -> idle
+    JMP wait_high           ; still low, keep waiting
+
+.program z80bus_pio_io
+    SET PINDIRS, 0          ; release WAIT (high-Z, pull-up holds it HIGH)
+idle:
+    JMP PIN idle            ; wait for IORQ (jmp pin) to go LOW
+    SET PINS, 0             ; output latch LOW while still high-Z
+    SET PINDIRS, 1          ; drive WAIT LOW (assert), freeze the bus
+    IN PINS, 32             ; capture bus + control flags
+    PULL BLOCK              ; wait for ARM acknowledge
+    SET PINDIRS, 0          ; release WAIT (high-Z)
+wait_high:
+    JMP PIN idle            ; IORQ HIGH again? cycle really over -> idle
+    JMP wait_high           ; still low, keep waiting

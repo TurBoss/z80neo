@@ -15,8 +15,9 @@
 #define FILE_EXT       "*.HEX"
 
 #define RAM_SIZE       16384
-#define SD_RAM_SIZE    16384
 #define MAX_BANKS      4
+#define PSRAM_BANKS    4
+#define TOTAL_BANKS    (MAX_BANKS + PSRAM_BANKS)
 
 // ---------------------------------------------------------------------------
 // Debug switches
@@ -27,6 +28,9 @@
 #define ADC_DEBUG_DELAY 100
 
 extern volatile bool DEBUG_ADC;
+
+// Z80 clock frequency in Hz (defined in main.c)
+extern float CPU_SPEED;
 
 // ---------------------------------------------------------------------------
 // UART
@@ -39,7 +43,7 @@ extern volatile bool DEBUG_ADC;
 #define PARITY     UART_PARITY_NONE
 
 // UART RX buffer
-#define UART_BUF_SIZE 8
+#define UART_BUF_SIZE 256
 
 // ---------------------------------------------------------------------------
 // MMU
@@ -101,13 +105,13 @@ extern volatile bool DEBUG_ADC;
 #define SEL2_OUT  27   // ADDRESS HIGH
 #define SEL3_OUT  28   // DATA
 
-#define DIR1_OUT  29
+#define DIR3_OUT  29   // DATA direction (swapped with DIR1)
 #define DIR2_OUT  30
-#define DIR3_OUT  31
+#define DIR1_OUT  31   // ADDR LOW direction (swapped with DIR3)
 
-#define GPIO_PWM_SIG 32
+#define GPIO_PWM_SIG 32   // Z80 clock output (GPIO32 → Z80 CLK)
 
-#define RESET_OUT 33
+#define RESET_OUT 33      // Z80 reset output (GPIO33 → Z80 RESET)
 
 #define ADC_KEYS_INPUT 40   // ADC KEYS
 
@@ -125,47 +129,33 @@ extern volatile bool DEBUG_ADC;
 
 // RAM banks
 extern uint8_t ram[MAX_BANKS][(uint16_t)RAM_SIZE];
-extern uint8_t mmuram[(uint16_t)RAM_SIZE];
-extern uint8_t sdram[(uint16_t)SD_RAM_SIZE];
+
+// PSRAM base (NULL if unavailable)
+extern uint8_t *psram_base;
 
 // Current bank
 extern volatile uint8_t cur_bank;
 
-// CPU state
-extern uint16_t pc;
-extern uint8_t  opcode;
-
-extern volatile uint8_t t_clock;
-extern volatile uint8_t m_clock;
-
-extern uint8_t next_oclock;
-extern uint8_t next_mclock;
-extern uint8_t next_dclock;
-
 // Address
-extern volatile uint8_t  low_adr;
-extern volatile uint8_t  high_adr;
 extern volatile uint16_t m_adr;
 
 // I/O ops
 extern volatile uint8_t io_r_op;
 extern volatile uint8_t io_w_op;
-extern volatile uint8_t opcode_r_op;
 extern volatile uint8_t mem_r_op;
 extern volatile uint8_t mem_w_op;
 
 // UART state
-extern char    rx_buffer[UART_BUF_SIZE];
-extern uint8_t rx_count;
-extern uint8_t rx_index;
-extern uint8_t rx_read;
-extern bool    rx_data_available;
+extern char     rx_buffer[UART_BUF_SIZE];
+extern uint16_t rx_count;
+extern uint16_t rx_index;
+extern uint16_t rx_read;
+extern bool     rx_data_available;
 
 extern volatile uint8_t serial_status_1;
-extern volatile uint8_t serial_status_2;
 
 // UART TX buffer (non-blocking send from IRQ context)
-#define UART_TX_BUF_SIZE 1024
+#define UART_TX_BUF_SIZE 4096
 extern uint8_t   tx_buffer[UART_TX_BUF_SIZE];
 extern uint16_t  tx_head;
 extern uint16_t  tx_tail;
@@ -178,20 +168,10 @@ extern uint32_t dw_op;
 extern uint32_t io_op;
 
 // Bus control
-extern bool mreq;
-extern bool iorq;
-extern bool rd;
-extern bool wr;
-extern bool clk_level;
-
-extern bool mreq_status;
-extern bool iorq_status;
-
 extern uint32_t bus_mask;
 
 extern volatile bool disabled;
-extern volatile bool read;
-extern volatile bool written;
+extern volatile bool system_up;
 
 // ADC thresholds
 extern volatile uint16_t CANCEL2_ADC;
@@ -204,21 +184,16 @@ extern volatile uint16_t UP_ADC;
 // SPI
 extern bool spi_configured;
 
-// PWM
-extern uint slice;
-
 // Misc
 extern char   MACHINE[FILE_LENGTH];
 extern char   BANK_PROG[4][FILE_LENGTH];
-extern uint8_t in_bytes[1024];
-extern char    log_buf[32];
 
 // ---------------------------------------------------------------------------
 // Function prototypes
 // ---------------------------------------------------------------------------
 
-// Hex decoding
-unsigned char decode_hex(char c);
+// Hex decoding — returns 0..15, or -1 for a non-hex character
+int decode_hex(char c);
 
 // Bank management
 void clear_bank(uint8_t bank);
@@ -229,19 +204,20 @@ void reset_hold(void);
 
 // Bus
 void set_bus_dir(int direction);
-void bus_manager(int value);
-void nop_delay(void);
 
 // UART
-void on_uart_rx(void);
 char read_uart_char(void);
+void uart_rx_poll(void);
+void echo_track_tx(uint8_t c);
 void uart_status_handler(void);
 
-// GPIO / bus callbacks
-void bus_callback(uint pin, uint32_t events);
+// MMU accessors (used by PIO bus handler)
+uint8_t mmu_read(uint16_t addr);
+void mmu_write(uint16_t addr, uint8_t data);
 
-// Bus poll — main-loop Z80 bus handler
-void bus_poll(void);
+// I/O accessors (used by PIO IORQ handler)
+uint8_t io_read_port(uint8_t port);
+void io_write_port(uint8_t port, uint8_t data);
 
 // SD card
 int   sd_read_init(void);
@@ -250,8 +226,9 @@ char *init_and_mount_sd_card(void);
 // File operations
 void load_file(bool quiet);
 void load(void);
-void load_hex_from_uart(void);
-void save(void);
 void load_init_progs(void);
+
+// Boot-time sanity dump (UART)
+void post_dump(void);
 
 #endif // MEMORY_H

@@ -23,73 +23,85 @@
 
 #include "display.h"
 #include "memory.h"
-#include "utils.h"
 #include "i2c_ee.h"
-#include "flash_disk.h"
+#include "cpm_disk.h"
 
 // ===========================================================================
 // Globals
 // ===========================================================================
 
 uint8_t ram[MAX_BANKS][(uint16_t)RAM_SIZE] = {};
-uint8_t mmuram[(uint16_t)RAM_SIZE]        = {};
-uint8_t sdram[(uint16_t)SD_RAM_SIZE]      = {};
+
+uint8_t *psram_base = NULL;
 
 volatile uint8_t cur_bank = 0;
 
-uint16_t pc     = 0;
-uint8_t  opcode = 0;
+volatile uint16_t m_adr = 0x0000;
 
-volatile uint8_t t_clock = 0;
-volatile uint8_t m_clock = 0;
-
-uint8_t next_oclock = 0;
-uint8_t next_mclock = 0;
-uint8_t next_dclock = 0;
-
-volatile uint8_t  low_adr  = 0x00;
-volatile uint8_t  high_adr = 0x00;
-volatile uint16_t m_adr    = 0x0000;
-
-volatile uint8_t io_r_op     = 0x00;
-volatile uint8_t io_w_op     = 0x00;
-volatile uint8_t opcode_r_op = 0x00;
-volatile uint8_t mem_r_op    = 0x00;
-volatile uint8_t mem_w_op    = 0x00;
+volatile uint8_t io_r_op  = 0x00;
+volatile uint8_t io_w_op  = 0x00;
+volatile uint8_t mem_r_op = 0x00;
+volatile uint8_t mem_w_op = 0x00;
 
 char    rx_buffer[UART_BUF_SIZE];
-uint8_t rx_count          = 0;
-uint8_t rx_index          = 0;
-uint8_t rx_read           = 0;
+uint16_t rx_count         = 0;
+uint16_t rx_index         = 0;
+uint16_t rx_read          = 0;
 bool    rx_data_available = false;
 
 volatile uint8_t serial_status_1 = 0x02;
-volatile uint8_t serial_status_2 = 0x00;
-
-#define UART_TX_BUF_SIZE 1024
 uint8_t  tx_buffer[UART_TX_BUF_SIZE];
 uint16_t tx_head = 0;
 uint16_t tx_tail = 0;
 uint16_t tx_count = 0;
+
+// Terminal local-echo cancellation.  If the terminal echoes what the Pico
+// sends, that echo arrives on RX and the Z80 reads its own output back as
+// input (which makes the CCP see spurious commands / Ctrl-C -> warm-boot loop).
+// Track recently transmitted bytes together with their send time; an RX byte
+// that matches the oldest un-echoed byte *within the round-trip window* is the
+// terminal's echo and is dropped.  The time window is what keeps a terminal
+// with local echo OFF from losing genuine keystrokes that happen to repeat a
+// character the Z80 just printed (that match arrives far later than an echo).
+#define ECHO_FIFO_SIZE 64
+#define ECHO_WINDOW_US 30000   // 30 ms — longer than a byte's round trip
+
+static uint8_t  echo_fifo[ECHO_FIFO_SIZE];
+static uint32_t echo_time[ECHO_FIFO_SIZE];
+static uint16_t echo_head = 0, echo_tail = 0, echo_count = 0;
+
+void echo_track_tx(uint8_t c) {
+    if (echo_count >= ECHO_FIFO_SIZE) {
+        // More output than can still be in flight as echo — evict the oldest
+        // so the FIFO always holds the most recent transmissions.
+        echo_tail = (echo_tail + 1) % ECHO_FIFO_SIZE;
+        echo_count--;
+    }
+    echo_fifo[echo_head] = c;
+    echo_time[echo_head] = time_us_32();
+    echo_head = (echo_head + 1) % ECHO_FIFO_SIZE;
+    echo_count++;
+}
+
+static bool echo_filter_rx(uint8_t c) {
+    if (echo_count == 0) return false;
+    if (echo_fifo[echo_tail] != c) return false;
+    if ((uint32_t)(time_us_32() - echo_time[echo_tail]) > ECHO_WINDOW_US)
+        return false;   // stale match — real input, not an echo
+    echo_tail = (echo_tail + 1) % ECHO_FIFO_SIZE;
+    echo_count--;
+    return true;        // drop: terminal echoed our own output
+}
 
 uint32_t d_adr = 0;
 uint32_t dr_op = 0;
 uint32_t dw_op = 0;
 uint32_t io_op = 0;
 
-bool mreq      = true;
-bool iorq      = true;
-bool clk_level = true;
-bool rd        = true;
-bool wr        = true;
-bool mreq_status = false;
-bool iorq_status = false;
-
 uint32_t bus_mask = 0;
 
 volatile bool disabled  = false;
-volatile bool read      = false;
-volatile bool written   = false;
+volatile bool system_up = false;    // set by main() after boot — gates display-loop Z80 control
 
 volatile uint16_t CANCEL2_ADC = 0xFFF;
 volatile uint16_t CANCEL_ADC  = 0xBFF;
@@ -100,44 +112,42 @@ volatile uint16_t UP_ADC      = 0x0FF;
 
 volatile bool DEBUG_ADC = false;
 
+// Console (port 0x80) traffic ring: bit7 set = Z80 write, clear = Z80 read.
+volatile uint8_t  diag_con[64];
+volatile uint32_t diag_con_idx = 0;
+
 bool spi_configured;
-uint slice;
 
 char    MACHINE[FILE_LENGTH] = "Z80 CPU";
 char    BANK_PROG[4][FILE_LENGTH];
-uint8_t in_bytes[1024];
-char    log_buf[32];
 
-// ===========================================================================
-// PIO + DMA
-// ===========================================================================
+volatile uint32_t last_bytes_loaded = 0;
 
 // ===========================================================================
 // Helpers
 // ===========================================================================
 
-unsigned char decode_hex(char c) {
-    if (c >= 65 && c <= 70)      return c - 65 + 10;
-    else if (c >= 97 && c <= 102) return c - 97 + 10;
-    else if (c >= 48 && c <= 67)  return c - 48;
-    else                          return -1;
+int decode_hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1;
 }
-
-// ===========================================================================
-// Forward declarations
-// ===========================================================================
-
-static inline uint8_t mmu_read(uint16_t addr);
-static inline void mmu_write(uint16_t addr, uint8_t data);
 
 // ===========================================================================
 // Bank management
 // ===========================================================================
 
 void clear_bank(uint8_t bank) {
-    for (uint16_t adr = 0; adr < RAM_SIZE; adr++)
-        ram[bank][adr] = 0;
-    memset(BANK_PROG[bank], 0, FILE_LENGTH);
+    if (bank < MAX_BANKS) {
+        for (uint16_t adr = 0; adr < RAM_SIZE; adr++)
+            ram[bank][adr] = 0;
+        if (bank < 4) memset(BANK_PROG[bank], 0, FILE_LENGTH);
+    } else if (psram_base) {
+        volatile uint8_t *p = psram_base + (bank - MAX_BANKS) * RAM_SIZE;
+        for (uint16_t adr = 0; adr < RAM_SIZE; adr++)
+            p[adr] = 0;
+    }
 }
 
 // ===========================================================================
@@ -158,7 +168,7 @@ static inline uint8_t phys_to_bank(uint8_t phys_page) {
     return (phys_page - MMU_PHYS_START) % MAX_BANKS;
 }
 
-static inline uint8_t mmu_read(uint16_t addr) {
+uint8_t mmu_read(uint16_t addr) {
     uint8_t page = (addr >> 14) & 0x03;
     return ram[phys_to_bank(mmu_page[page])][addr & 0x3FFF];
 }
@@ -166,10 +176,28 @@ static inline uint8_t mmu_read(uint16_t addr) {
 // After load_init_progs, lock RST vectors against accidental Z80 writes
 static volatile bool rst_locked = false;
 
-static inline void mmu_write(uint16_t addr, uint8_t data) {
-    // z80neo: write-protect the first 4 bytes (RST 00 vector) AFTER loading,
-    // to prevent corruption during restart or errant writes during execution.
-    if (rst_locked && addr < 4 && mmu_page[(addr >> 14) & 0x03] == 0x20) return;
+// Diagnostics: track writes that land in the BIOS code area (0xEB00-0xEE00)
+volatile uint16_t diag_bios_wr_addr = 0;
+volatile uint8_t  diag_bios_wr_data = 0;
+volatile uint32_t diag_bios_wr_count = 0;
+
+// Diagnostics: track the value the hex loader stores at 0xEBEE
+volatile uint8_t  diag_hex_ebee = 0;
+volatile uint32_t diag_hex_ebee_count = 0;
+volatile char     diag_hex_raw[64] = {0};
+
+void mmu_write(uint16_t addr, uint8_t data) {
+    // z80neo: write-protect only the JP opcode byte at 0x0000 in bank 0.  The
+    // BIOS installs the warm-boot vector as LD (0001H),HL (bytes 0x0001/0x0002
+    // = WBOOT), so those must stay writable or every warm boot falls back to
+    // the loader's cold-boot JP and reprints the signon.  rst_locked protects
+    // against errant Z80 code corrupting the restart opcode itself.
+    if (rst_locked && addr == 0 && mmu_page[0] == 0x20) return;
+    if (addr >= 0xEB00 && addr <= 0xEE00) {
+        diag_bios_wr_addr = addr;
+        diag_bios_wr_data = data;
+        diag_bios_wr_count++;
+    }
     uint8_t page = (addr >> 14) & 0x03;
     ram[phys_to_bank(mmu_page[page])][addr & 0x3FFF] = data;
 }
@@ -178,52 +206,56 @@ static inline void mmu_write(uint16_t addr, uint8_t data) {
 // I/O device handler — UART + MMU ports (handled by GPIO IRQ on IORQ)
 // ===========================================================================
 
-static uint8_t io_port  = 0;
-
-static uint8_t io_read_port(uint8_t port) {
+uint8_t io_read_port(uint8_t port) {
     switch (port) {
-    case SERIAL_PORT_1: {
+    case SERIAL_PORT_1:  // 0x80 — serial data (repo build)
+    case 0x83: {         // 0x83 — serial data (older SD-card build)
+        // Pick up anything the main loop has not drained yet.
+        uart_rx_poll();
         uint8_t ch = read_uart_char();
+        diag_con[diag_con_idx++ & 63] = ch & 0x7F;
         serial_status_1 = (rx_data_available) ? (serial_status_1 | 0x01) : (serial_status_1 & ~0x01);
         return ch;
     }
     case 0xD1: return i2c_ee_read();
-    case 0xE0: return fd_read_port(0xE0);
-    case 0xE1: case 0xE2: case 0xE3: return 0x00;
+    case 0xE0: return cpm_disk_read_port(0xE0);
+    case 0xE2: return cpm_disk_read_port(0xE2);
     case SERIAL_STATUS_1:
-        serial_status_1 = (rx_data_available) ? (serial_status_1 | 0x01) : (serial_status_1 & ~0x01);
+        // Only consult rx_data_available (software buffer), not uart_is_readable
+        // (hardware FIFO).  Mixing the two causes a race: the status port says
+        // "data ready" but read_uart_char() finds rx_count==0 and returns NUL.
+        // The main loop drains the HW FIFO into rx_buffer every iteration.
+        serial_status_1 = rx_data_available ? (serial_status_1 | 0x01) : (serial_status_1 & ~0x01);
         return serial_status_1;
-    case 0xF1: return mmu_page[0];
-    case 0xF3: return mmu_page[1];
-    case 0xF5: return mmu_page[2];
-    case 0xF7: return mmu_page[3];
+    case 0xF0: return mmu_page[0];
+    case 0xF1: return mmu_page[1];
+    case 0xF2: return mmu_page[2];
+    case 0xF3: return mmu_page[3];
     default: return 0x00;
     }
 }
 
-static void io_write_port(uint8_t port, uint8_t data) {
+void io_write_port(uint8_t port, uint8_t data) {
     switch (port) {
-    case SERIAL_PORT_1:
-        // Non-blocking: buffer and flush what we can
+    case SERIAL_PORT_1:  // 0x80 — serial data (repo build)
+    case 0x83:           // 0x83 — serial data (older SD-card build)
+        diag_con[diag_con_idx++ & 63] = data | 0x80;
         if (tx_count < UART_TX_BUF_SIZE) {
             tx_buffer[tx_head++] = data;
             if (tx_head >= UART_TX_BUF_SIZE) tx_head = 0;
             tx_count++;
         }
-        // Flush up to 4 bytes (non-blocking, rest in uart_status_handler)
-        for (int f = 0; f < 4 && tx_count > 0 && uart_is_writable(UART_ID); f++) {
-            uart_putc(UART_ID, tx_buffer[tx_tail++]);
-            if (tx_tail >= UART_TX_BUF_SIZE) tx_tail = 0;
-            tx_count--;
-        }
         serial_status_1 = (tx_count < UART_TX_BUF_SIZE) ? (serial_status_1 | 0x02) : (serial_status_1 & ~0x02);
         break;
-    case 0xF1: mmu_page[0] = data; break;
-    case 0xF3: mmu_page[1] = data; break;
-    case 0xF5: mmu_page[2] = data; break;
-    case 0xF7: mmu_page[3] = data; break;
+    case 0xF0: mmu_page[0] = data; break;
+    case 0xF1: mmu_page[1] = data; break;
+    case 0xF2: mmu_page[2] = data; break;
+    case 0xF3: mmu_page[3] = data; break;
     case 0xD1: i2c_ee_write(data); return;
-    case 0xE0: case 0xE1: case 0xE2: case 0xE3: fd_write_port(port, data); return;
+    case 0xE1: cpm_disk_write_port(0xE1, data); return;
+    case 0xE2: cpm_disk_write_port(0xE2, data); return;
+    case 0xE0: cpm_disk_write_port(0xE0, data); return;
+    case 0xE3: cpm_disk_write_port(0xE3, data); return;  // drive select
     case SERIAL_STATUS_1:
     default: break;
     }
@@ -241,8 +273,6 @@ void reset_release(void) {
 void reset_hold(void) {
     gpio_set_dir(RESET_OUT, GPIO_OUT);
     gpio_put(RESET_OUT, false);
-    t_clock = 0;
-    m_clock = 0;
 }
 
 // ===========================================================================
@@ -254,47 +284,40 @@ void set_bus_dir(int direction) {
     else           gpio_set_dir_masked(bus_mask, 0);
 }
 
-void bus_manager(int value) {
-    if (value == 0) {  // OFF
-        gpio_put(DIR1_OUT, 1); gpio_put(DIR2_OUT, 1); gpio_put(DIR3_OUT, 1);
-        gpio_put(SEL1_OUT, 1); gpio_put(SEL2_OUT, 1); gpio_put(SEL3_OUT, 1);
-    } else if (value == 1) {  // ADDR LOW
-        gpio_put(DIR1_OUT, 0); gpio_put(DIR2_OUT, 1); gpio_put(DIR3_OUT, 1);
-        gpio_put(SEL1_OUT, 0); gpio_put(SEL2_OUT, 1); gpio_put(SEL3_OUT, 1);
-    } else if (value == 2) {  // ADDR HIGH
-        gpio_put(DIR1_OUT, 1); gpio_put(DIR2_OUT, 0); gpio_put(DIR3_OUT, 1);
-        gpio_put(SEL1_OUT, 1); gpio_put(SEL2_OUT, 0); gpio_put(SEL3_OUT, 1);
-    } else if (value == 3) {  // DATA
-        gpio_put(DIR1_OUT, 1); gpio_put(DIR2_OUT, 1); gpio_put(DIR3_OUT, 1);
-        gpio_put(SEL1_OUT, 1); gpio_put(SEL2_OUT, 1); gpio_put(SEL3_OUT, 0);
-    }
-}
-
 // ===========================================================================
 // UART
 // ===========================================================================
 
-void on_uart_rx(void) {
-    char rx_char = uart_getc(UART_ID);
-    rx_buffer[rx_index] = rx_char;
-    rx_index = (rx_index + 1) % UART_BUF_SIZE;
-    rx_count++;
-    rx_data_available = true;
-}
-
-static inline uint8_t circ_next(uint8_t idx) {
-    return (idx + 1) % UART_BUF_SIZE;
+// Drain the hardware UART RX FIFO into the software ring.  Single place that
+// touches rx_index/rx_read/rx_count so the main loop and the I/O port handler
+// cannot disagree about the buffer state.  If the ring is full the oldest byte
+// is dropped (console type-ahead semantics).
+void uart_rx_poll(void) {
+    while (uart_is_readable(UART_ID)) {
+        uint8_t c = uart_getc(UART_ID);
+        if (echo_filter_rx(c)) continue;  // terminal local echo — drop it
+        if (rx_count >= UART_BUF_SIZE) {
+            rx_read = (rx_read + 1) % UART_BUF_SIZE;
+            rx_count--;
+        }
+        rx_buffer[rx_index] = c;
+        rx_index = (rx_index + 1) % UART_BUF_SIZE;
+        rx_count++;
+        rx_data_available = true;
+    }
 }
 
 char read_uart_char(void) {
+    // Only return from software buffer — main loop drains UART FIFO
     if (rx_count > 0) {
         char ch = rx_buffer[rx_read];
-        rx_read = circ_next(rx_read);
+        rx_read = (rx_read + 1) % UART_BUF_SIZE;
         rx_count--;
+        if (!rx_count) rx_data_available = false;
         return ch;
     }
     rx_data_available = false;
-    return '\0';
+    return 0;
 }
 
 void uart_status_handler(void) {
@@ -303,120 +326,11 @@ void uart_status_handler(void) {
         tx_tail = (tx_tail + 1) % UART_TX_BUF_SIZE;
         tx_count--;
     }
+    rx_data_available = rx_data_available || uart_is_readable(UART_ID);
     serial_status_1 = (uart_is_writable(UART_ID) && tx_count < UART_TX_BUF_SIZE)
                       ? (serial_status_1 | 0x02) : (serial_status_1 & ~0x02);
     if (rx_data_available) serial_status_1 |= 0x01;
     else                   serial_status_1 &= ~0x01;
-}
-
-// ===========================================================================
-// Bus poll — main-loop based Z80 bus handler
-// ===========================================================================
-
-static bool bus_active = false;
-
-void bus_poll(void) {
-    if (!gpio_get(IORQ_INPUT)) {
-        if (bus_active) return;
-        bus_active = true;
-        io_op++;
-
-        // Force all muxes off FIRST — clear residual state from memory handler
-        gpio_put(SEL3_OUT, 1); gpio_put(SEL1_OUT, 1); gpio_put(SEL2_OUT, 1);
-        gpio_set_dir_masked(bus_mask, 0);
-        busy_wait_us_32(2);
-
-        // Wait for WR or RD FIRST, then read port
-        int timeout = 5000;
-        while (gpio_get(WR_INPUT) && gpio_get(RD_INPUT) && --timeout) tight_loop_contents();
-
-        // Read port using same dual-mux approach as memory addresses
-        gpio_put(SEL2_OUT, 1);  // ensure SEL2 off
-        gpio_put(SEL1_OUT, 0);  // SEL1 = low byte
-        busy_wait_us_32(2);
-        uint8_t pl = ((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0xFF;
-        uint32_t mask = (1u << SEL1_OUT) | (1u << SEL2_OUT);
-        gpio_put_masked(mask, (1u << SEL1_OUT));  // SEL1=1, SEL2=0
-        busy_wait_us_32(2);
-        uint8_t ph = ((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0xFF;
-        gpio_put(SEL2_OUT, 1);  // muxes off
-        uint8_t port = pl;
-        // HW: A0 stuck high → both 0xF2 and 0xF3 read as 0xF3. Map to 0xF3.
-
-        if (!gpio_get(WR_INPUT)) {
-            gpio_put(SEL3_OUT, 0); gpio_put(DIR3_OUT, 0);
-            busy_wait_us_32(3);
-            io_w_op = ((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0xFF;
-            gpio_put(SEL3_OUT, 1);
-            bus_active = false;  // allow new cycles while UART may block
-            io_write_port(port, io_w_op);
-            while (!gpio_get(IORQ_INPUT)) tight_loop_contents();
-            // Critical: spin-wait for next MREQ — Z80 starts memory cycle
-            // immediately after IORQ, and we MUST catch it or Z80 reads garbage
-            while (gpio_get(MREQ_INPUT)) tight_loop_contents();
-            goto handle_mem;
-        } else if (!gpio_get(RD_INPUT)) {
-            io_r_op = io_read_port(port);
-            gpio_put(SEL3_OUT, 0); gpio_put(DIR3_OUT, 1);
-            set_bus_dir(1);
-            gpio_put_masked(bus_mask, (uint32_t)io_r_op << BUS_GPIO_START);
-            while (!gpio_get(IORQ_INPUT)) tight_loop_contents();
-            gpio_set_dir_masked(bus_mask, 0);
-            gpio_put(SEL3_OUT, 1);
-        }
-        bus_active = false;
-        return;
-    }
-
-    // Label: memory cycle detected during IORQ wait. Clean up IO state and handle it.
-handle_mem:
-    bus_active = false;
-    gpio_set_dir_masked(bus_mask, 0);
-    gpio_put(SEL3_OUT, 1);
-    // Fall through to MREQ handler
-
-    if (!gpio_get(MREQ_INPUT)) {
-        if (bus_active) return;
-        if (gpio_get(RD_INPUT) && gpio_get(WR_INPUT)) return;
-        bus_active = true;
-
-
-        // Read address — write both SEL pins atomically via SIO
-        gpio_put(SEL2_OUT, 1);  // ensure SEL2 off first
-        gpio_put(SEL1_OUT, 0);  // SEL1 = low byte
-        busy_wait_us_32(2);     // 2us settle
-        uint8_t al = ((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0xFF;
-
-        // Atomically switch: SEL1 off, SEL2 on
-        uint32_t mask = (1u << SEL1_OUT) | (1u << SEL2_OUT);
-        gpio_put_masked(mask, (1u << SEL1_OUT));  // SEL1=1, SEL2=0
-        busy_wait_us_32(2);     // 2us settle
-        uint8_t ah = ((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0xFF;
-
-        gpio_put(SEL2_OUT, 1);  // muxes off
-        uint16_t addr = al | ((uint16_t)ah << 8);
-
-        if (!gpio_get(WR_INPUT)) {
-            gpio_put(SEL3_OUT, 0); gpio_put(DIR3_OUT, 0);
-            busy_wait_us_32(3);
-            uint8_t data = ((gpio_get_all() & bus_mask) >> BUS_GPIO_START) & 0xFF;
-            mmu_write(addr, data);
-            mem_w_op = data; m_adr = addr; d_adr = addr; dw_op++;
-            while (!gpio_get(MREQ_INPUT)) tight_loop_contents();
-            gpio_put(SEL3_OUT, 1);
-        } else if (!gpio_get(RD_INPUT)) {
-            uint8_t data = mmu_read(addr);
-            mem_r_op = data; m_adr = addr; d_adr = addr; dr_op++;
-            gpio_put(SEL3_OUT, 0); gpio_put(DIR3_OUT, 1);
-            busy_wait_us_32(3);
-            set_bus_dir(1);
-            gpio_put_masked(bus_mask, (uint32_t)data << BUS_GPIO_START);
-            while (!gpio_get(MREQ_INPUT)) tight_loop_contents();
-            gpio_set_dir_masked(bus_mask, 0);
-            gpio_put(SEL3_OUT, 1);
-        }
-        bus_active = false;
-    }
 }
 
 // ===========================================================================
@@ -562,7 +476,7 @@ void load_file(bool quiet) {
         if (!f_gets(buf, sizeof(buf), &fil_local)) break;
         int i = 0;
         if (buf[0] == '\0' || buf[0] == '\r' || buf[0] == '\n') continue;
-        if (buf[0] != ':') { sprintf(text_buffer, "Not HEX Line: %d Data: %016x", line, buf); uart_puts(UART_ID, text_buffer); clear_screen(); fr_local = f_close(&fil_local); return; }
+        if (buf[0] != ':') { sprintf(text_buffer, "Not HEX Line: %d Data: %s", line, buf); uart_puts(UART_ID, text_buffer); clear_screen(); fr_local = f_close(&fil_local); return; }
 
         parser_state = 1; intel_byte_count = 0; intel_address = 0; intel_record_type = 0; intel_checksum = 0; hex_digit = 0; current_byte = 0; data_index = 0;
         cur_bank = 0; i = 1;
@@ -584,6 +498,7 @@ void load_file(bool quiet) {
                 case 4: intel_record_type = current_byte; parser_state = (intel_byte_count == 0) ? 6 : (data_index = 0, 5); break;
                 case 5: data_buffer[data_index++] = current_byte; if (data_index >= intel_byte_count) parser_state = 6; break;
                 case 6:
+                    if (intel_address == 0xEBE0) { strncpy((char*)diag_hex_raw, buf, sizeof(diag_hex_raw)-1); }
                     if ((intel_checksum + current_byte) & 0xFF) { sprintf(text_buffer, "Checksum err Line %05d", line); uart_puts(UART_ID, text_buffer); clear_screen(); fr_local = f_close(&fil_local); return; }
                     switch (intel_record_type) {
                     case 0: intel_absolute_address = intel_extended_address + intel_address;
@@ -591,6 +506,7 @@ void load_file(bool quiet) {
                           for (int j = 0; j < intel_byte_count; j++) {
                               uint8_t val = data_buffer[j];
                               uint32_t abs_addr = intel_absolute_address + j;
+                              if (abs_addr == 0xEBEE) { diag_hex_ebee = val; diag_hex_ebee_count++; }
                               if (abs_addr < 0x4000) {
                                   // Bootloader code: replicate to ALL banks
                                   for (int bk = 0; bk < MAX_BANKS; bk++)
@@ -619,6 +535,7 @@ void load_file(bool quiet) {
     }
     fr_local = f_close(&fil_local); if (fr_local != FR_OK) show_error(0, 0, "Can't close file!");
     f_unmount("0:");
+    last_bytes_loaded = bytes_loaded;
     if (DEBUG_LOAD) { sprintf(text_buffer, "Loaded %lu bytes", bytes_loaded); uart_puts(UART_ID, text_buffer); uart_puts(UART_ID, "\r\n"); print_string(0, 6, text_buffer); sleep_ms(DISPLAY_DELAY_LONG); }
     if (!quiet) { clear_screen(); sprintf(text_buffer, "Loaded: %lu bytes", bytes_loaded); print_string(0, 0, text_buffer); print_string(0, 1, file); sleep_ms(DISPLAY_DELAY); }
     strcpy(BANK_PROG[cur_bank], file);
@@ -639,11 +556,18 @@ void load_init_progs(void) {
     rst_locked = true;
 }
 
-// ===========================================================================
-// Initialization — called from main.c
-// ===========================================================================
-
-void bus_callback(uint pin, uint32_t events) { /* GPIO-based; unused */ }
-void save(void) {}
-void load_hex_from_uart(void) {}
-void pio_bus_init(void) { /* PWM ISR mode; unused */ }
+// Boot-time sanity dump: shows the loaded program and the key page-zero /
+// CCP-BDOS / BIOS vectors actually present in the banks.
+void post_dump(void) {
+    char b[160];
+    sprintf(b,
+        "POST: pgm=%s bytes=%lu\r\n"
+        "  0000: %02X %02X %02X %02X\r\n"
+        "  D400: %02X %02X %02X %02X\r\n"
+        "  EB00: %02X %02X %02X %02X\r\n",
+        BANK_PROG[0], (unsigned long)last_bytes_loaded,
+        ram[0][0x0000], ram[0][0x0001], ram[0][0x0002], ram[0][0x0003],
+        ram[3][0x1400], ram[3][0x1401], ram[3][0x1402], ram[3][0x1403],
+        ram[3][0x2B00], ram[3][0x2B01], ram[3][0x2B02], ram[3][0x2B03]);
+    uart_puts(UART_ID, b);
+}

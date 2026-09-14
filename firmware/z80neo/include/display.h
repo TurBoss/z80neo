@@ -19,7 +19,6 @@
 
 #define TEXT_BUFFER_SIZE 512
 #define BYTES_PER_ROW    8
-#define BYTES_PER_LINE   16
 #define LINES            8
 
 // ---------------------------------------------------------------------------
@@ -80,7 +79,7 @@ extern char line_buffer5[24];
 extern char line_buffer6[24];
 extern char line_buffer7[24];
 
-extern char tbmon_text_buffer[8][17];
+extern char tbmon_text_buffer[8][32];
 
 extern const char *hexStringChar[];
 
@@ -140,6 +139,7 @@ void display_ram_viewer(void);
 
 // Button I/O
 button_state read_button_state(void);
+button_state read_button_state_debounced(void);
 bool wait_for_button_release(void);
 void wait_for_button(void);
 bool wait_for_yes_no_button(void);

@@ -1,21 +1,12 @@
 #!/bin/bash
 
-
-##
-#  configure riscv gnu toolchain
-#
-# ./configure --prefix=/opt/riscv32 --with-arch=rv32ima_zicsr_zifencei_zba_zbb_zbs_zbkb_zca_zcb --with-abi=ilp32 --with-multilib-generator="rv32ima_zicsr_zifencei_zba_zbb_zbs_zbkb_zca_zcb-ilp32--;rv32imac_zicsr_zifencei_zba_zbb_zbs_zbkb-ilp32--"
-#
-##
-
-
-# export PATH=/opt/riscv32/bin:$PATH
-
+export PATH=/usr/local/bin:/usr/bin:/bin
 export PICO_SDK_PATH=/home/turboss/Dev/PICO/pico-sdk
 export PICO_EXTRAS_PATH=/home/turboss/Dev/PICO/pico-extras
 
-
-# cmake  -B build -S . -DPICO_BOARD=pico2 -DPICO_PLATFORM=rp2350-riscv
-cmake  -B build -S . -DPICO_BOARD=pico2
+# ARM Cortex-M33 (both cores) — PSRAM works on ARM
+# Board is the Olimex RP2350-PICO2-BB48 (RP2350B, 48 GPIOs); header in boards/.
+cmake -B build -S . -DPICO_BOARD=z80neo_bb48 -DPSRAM_ENABLE=ON
+# For RISC-V: cmake -B build -S . -DPICO_BOARD=z80neo_bb48 -DPICO_PLATFORM=rp2350-riscv -DPSRAM_ENABLE=ON
 
 cmake --build build --parallel 1

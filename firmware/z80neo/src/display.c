@@ -17,10 +17,10 @@
 #include "tf_card.h"
 
 #include "display.h"
-#include "flash_disk.h"
 #include "memory.h"
 #include "logo.h"
-#include "utils.h"
+#include "cpm_disk.h"
+#include "z80bus_pio.h"
 
 // ===========================================================================
 // Globals
@@ -71,7 +71,7 @@ char line_buffer5[24];
 char line_buffer6[24];
 char line_buffer7[24];
 
-char tbmon_text_buffer[8][17];
+char tbmon_text_buffer[8][32];
 
 const char *hexStringChar[] = {"0", "1", "2", "3", "4", "5", "6", "7",
                                 "8", "9", "a", "b", "C", "d", "E", "F"};
@@ -134,29 +134,8 @@ void clear_screen0(void) {
 }
 
 void clear_line0(int line) {
-    switch (line) {
-    case 0:
-        memset(line1, 0, TEXT_BUFFER_SIZE);
-        break;
-    case 1:
-        memset(line2, 0, TEXT_BUFFER_SIZE);
-        break;
-    case 2:
-        memset(line3, 0, TEXT_BUFFER_SIZE);
-        break;
-    case 4:
-        memset(line4, 0, TEXT_BUFFER_SIZE);
-        break;
-    case 5:
-        memset(line4, 0, TEXT_BUFFER_SIZE);
-        break;
-    case 6:
-        memset(line4, 0, TEXT_BUFFER_SIZE);
-        break;
-    case 7:
-        memset(line4, 0, TEXT_BUFFER_SIZE);
-        break;
-    }
+    if (line < 0 || line >= LINES) return;
+    memset(screen[line], 0, TEXT_BUFFER_SIZE);
     strcpy(screen[line], "                ");
     WriteString(buf, 0, line * 8, screen[line]);
 }
@@ -279,20 +258,19 @@ void render_display(void) { render(buf, &frame_area); }
 void display_ram_viewer(void) {
     for (int line = 0; line < LINES; line++) {
         int offset = tbmon_idx + (line * BYTES_PER_ROW);
-        char byte_data[1];
+        char byte_data[8];
 
-        sprintf(tbmon_text_buffer[line], "%04x ", offset);
+        sprintf(tbmon_text_buffer[line], "%04x ", offset & 0xFFFF);
 
         for (int col = 0; col < BYTES_PER_ROW; col++) {
-            if (col < 3) {
-                sprintf(byte_data, "%02x:", sdram[offset + col]);
-            } else {
-                sprintf(byte_data, "%02x", sdram[offset + col]);
-            }
+            uint8_t v = ram[cur_bank][(offset + col) & 0x3FFF];
+            if (col < 3)
+                sprintf(byte_data, "%02x:", v);
+            else
+                sprintf(byte_data, "%02x", v);
             strcat(tbmon_text_buffer[line], byte_data);
         }
 
-        strcat(tbmon_text_buffer[line], "\0");
         print_string(0, line, tbmon_text_buffer[line]);
     }
 }
@@ -320,6 +298,16 @@ button_state read_button_state(void) {
     }
 }
 
+// Debounced read for the main-loop trigger.  A single noisy ADC sample must
+// never reset the Z80, so require the same non-NONE state on two reads ~10 ms
+// apart.
+button_state read_button_state_debounced(void) {
+    button_state a = read_button_state();
+    if (a == NONE) return NONE;
+    sleep_ms(10);
+    return (read_button_state() == a) ? a : NONE;
+}
+
 bool wait_for_button_release(void) {
     uint64_t last = time_us_64();
     while (read_button_state() != NONE) {
@@ -337,7 +325,6 @@ void wait_for_button(void) {
 bool wait_for_yes_no_button(void) {
     button_state button;
     while (true) {
-        fd_process_flush();
         button = read_button_state();
         if (button == OK) {
             wait_for_button_release();
@@ -356,6 +343,8 @@ bool wait_for_yes_no_button(void) {
 void display_loop(void) {
     disp_mode cur_disp_mode = ON;
     button_state buttons = NONE;
+    bool buttons_enabled = false;   // keypad verified to rest at NONE
+    bool buttons_checked = false;
 
     // ADC debug mode
     if (DEBUG_ADC) {
@@ -364,53 +353,134 @@ void display_loop(void) {
         uint16_t adc = adc_read();
 
         while (true) {
-        fd_process_flush();
             adc_select_input(0);
             print_string(0, 1, "ADC:%03x       ", adc_read());
             sleep_ms(10);
         }
     }
 
+    // Partial render area for the fast-updating monitor lines (pages 4-7).
+    struct render_area status_area = {
+        .start_col = 0,
+        .end_col = SSD1306_WIDTH - 1,
+        .start_page = 4,
+        .end_page = 7
+    };
+    calc_render_area_buflen(&status_area);
+
     while (true) {
-        fd_process_flush();
+        static uint8_t fast_frame = 0;
         if (cur_disp_mode != OFF) {
-            sprintf(text_buffer, "R%04lx W%04lx IO%04lx",
-                    dr_op & 0xFFFF, dw_op & 0xFFFF, io_op & 0xFFFF);
-            WriteString(buf, 0, 0, text_buffer);
-            render(buf, &frame_area);
+            // Main page.  Slow lines refresh on the full frame; the fast lines
+            // (pages 4-7) render every iteration via status_area.  16-char limit.
+            if ((fast_frame & 0x1F) == 0) {
+                uint8_t drv, trk, sec;
+                cpm_disk_state(&drv, &trk, &sec);
+
+                sprintf(line_buffer0, "Z80NEO %3lukHz",
+                        (unsigned long)(CPU_SPEED / 1000.0f));
+                WriteString(buf, 0, 0 * 8, line_buffer0);
+
+                sprintf(line_buffer1, "R%04lx W%04lx I%03lx",
+                        dr_op & 0xFFFF, dw_op & 0xFFFF, io_op & 0xFFF);
+                WriteString(buf, 0, 1 * 8, line_buffer1);
+
+                sprintf(line_buffer2, "BNK %d DSK %c",
+                        cur_bank, (drv < 26) ? ('A' + drv) : '?');
+                WriteString(buf, 0, 2 * 8, line_buffer2);
+
+                sprintf(line_buffer3, "TRK %03u SEC %02u", trk, sec);
+                WriteString(buf, 0, 3 * 8, line_buffer3);
+            }
+
+            sprintf(line_buffer4, "RX %u TX %u", rx_count, tx_count);
+            WriteString(buf, 0, 4 * 8, line_buffer4);
+
+            sprintf(line_buffer5, "TO %lu MAX %luus",
+                    (unsigned long)diag_mem_timeouts,
+                    (unsigned long)diag_max_service_us);
+            WriteString(buf, 0, 5 * 8, line_buffer5);
+
+            sprintf(line_buffer6, "MRD %02x MWR %02x", mem_r_op, mem_w_op);
+            WriteString(buf, 0, 6 * 8, line_buffer6);
+
+            sprintf(line_buffer7, "IOR %02x IOW %02x", io_r_op, io_w_op);
+            WriteString(buf, 0, 7 * 8, line_buffer7);
+
+            if ((fast_frame & 0x1F) == 0)
+                render(buf, &frame_area);
+            else
+                render(buf, &status_area);
         }
 
         if ((cur_disp_mode == OFF) & (tbmon == false)) {
 
-            sprintf(line_buffer1, "ADDR: #%08x", m_adr);
-            WriteString(buf, 0, 1 * 8, line_buffer1);
+            // Slow-changing lines (full frame every 32 iterations)
+            if ((fast_frame & 0x1F) == 0) {  // every 32 iterations
+                sprintf(line_buffer0, "Z80 %3lu kHz", (unsigned long)(CPU_SPEED / 1000.0f));
+                WriteString(buf, 0, 0 * 8, line_buffer0);
 
-            sprintf(line_buffer2, "RDAT: %02x WDAT:%02x", mem_r_op, mem_w_op);
-            WriteString(buf, 0, 2 * 8, line_buffer2);
+                sprintf(line_buffer1, "BNK %d REF %lx",
+                        cur_bank, (unsigned long)(pio_cycles_refresh & 0xFFFF));
+                WriteString(buf, 0, 1 * 8, line_buffer1);
 
-            sprintf(line_buffer3, "IDAT: %02x ODAT:%02x", io_r_op, io_w_op);
-            WriteString(buf, 0, 3 * 8, line_buffer3);
+                sprintf(line_buffer2, "TO %lu MAX %luus",
+                        (unsigned long)diag_mem_timeouts,
+                        (unsigned long)diag_max_service_us);
+                WriteString(buf, 0, 2 * 8, line_buffer2);
 
-            sprintf(line_buffer4, "BANK: #%02d", cur_bank);
+                sprintf(line_buffer3, "R%04lx W%04lx",
+                        dr_op & 0xFFFF, dw_op & 0xFFFF);
+                WriteString(buf, 0, 3 * 8, line_buffer3);
+            }
+
+            // Fast-updating monitor lines (every iteration)
+            sprintf(line_buffer4, "ADDR %04x", m_adr);
             WriteString(buf, 0, 4 * 8, line_buffer4);
 
-            sprintf(line_buffer5, "USTAT: %08b", serial_status_1);
+            sprintf(line_buffer5, "MRD %02x MWR %02x", mem_r_op, mem_w_op);
             WriteString(buf, 0, 5 * 8, line_buffer5);
 
-            sprintf(line_buffer6, "UDATA: %08b", rx_buffer[0]);
+            sprintf(line_buffer6, "IOR %02x IOW %02x", io_r_op, io_w_op);
             WriteString(buf, 0, 6 * 8, line_buffer6);
 
-            render(buf, &frame_area);
+            sprintf(line_buffer7, "RX %u TX %u", rx_count, tx_count);
+            WriteString(buf, 0, 7 * 8, line_buffer7);
+
+            // Render only status pages (4-7) for speed; full frame every 32 iterations
+            if ((fast_frame & 0x1F) == 0)
+                render(buf, &frame_area);
+            else
+                render(buf, &status_area);
         }
 
-        buttons = read_button_state();
+        // Shared by both screens so their full/partial render cadence is the same.
+        fast_frame++;
 
-        if (buttons != NONE) {
+        // Once boot is done, confirm the keypad actually rests at NONE before
+        // trusting it.  A disconnected or floating ADC input reads as a button,
+        // which would reset the Z80 every iteration and keep it in a reboot
+        // loop; in that case disable button handling entirely.
+        if (system_up && !buttons_checked) {
+            buttons_checked = true;
+            int none_reads = 0;
+            for (int i = 0; i < 16; i++) {
+                if (read_button_state() == NONE) none_reads++;
+                sleep_ms(5);
+            }
+            buttons_enabled = (none_reads == 16);
+        }
+
+        buttons = read_button_state_debounced();
+
+        // Only handle buttons once the main loop has finished booting and
+        // released the Z80.  Before that, the ADC can read a spurious value
+        // (floating input during init) that would release the Z80 reset early
+        // and deadlock the main loop's boot sequence.
+        if (system_up && buttons_enabled && buttons != NONE) {
             reset_hold();
             confirmed = false;
             disabled = true;
-            read = true;
-            written = true;
 
             while (!confirmed) {
             };
@@ -418,24 +488,14 @@ void display_loop(void) {
             switch (buttons) {
             case UP:
                 if (!tbmon_loaded) {
-                    clear_screen();
-                    print_string(0, 0, "Load from:");
-                    print_string(0, 2, "SD card  -> OK");
-                    print_string(0, 3, "Serial  -> CANCEL");
-                    if (wait_for_yes_no_button()) {
-                        load();
-                    } else {
-                        load_hex_from_uart();
-                    }
+                    load();
                     sleep_ms(DISPLAY_DELAY);
                     sleep_ms(DISPLAY_DELAY);
                 }
                 if (tbmon) {
                     if (tbmon_loaded) {
-                        tbmon_idx -= BYTES_PER_ROW;
-                        if (tbmon_idx >= RAM_SIZE - (BYTES_PER_LINE * LINES)) {
-                            tbmon_idx = 0;
-                        }
+                        tbmon_idx = (tbmon_idx >= BYTES_PER_ROW)
+                                    ? tbmon_idx - BYTES_PER_ROW : 0;
                     }
                     tbmon_loaded = true;
                     display_ram_viewer();
@@ -448,18 +508,11 @@ void display_loop(void) {
                 break;
 
             case DOWN:
-                if (!tbmon_loaded) {
-                    save();
-                    sleep_ms(DISPLAY_DELAY);
-                    sleep_ms(DISPLAY_DELAY);
-                }
                 if (tbmon) {
                     if (tbmon_loaded) {
                         tbmon_idx += BYTES_PER_ROW;
-                        if (tbmon_idx < 0) {
-                            tbmon_idx = RAM_SIZE -
-                                        (BYTES_PER_LINE * LINES);
-                        }
+                        if (tbmon_idx > RAM_SIZE - (BYTES_PER_ROW * LINES))
+                            tbmon_idx = 0;
                     }
                     tbmon_loaded = true;
                     display_ram_viewer();
