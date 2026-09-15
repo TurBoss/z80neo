@@ -23,11 +23,13 @@
 
 - Another z80 board
 
-A Raspberry Pi Pico 2 (RP235x) based computer arround the z80 cpu
+A computer around a real Z80 CPU (Zilog Z0840004), with an Olimex
+RP2350-PICO2-BB48 (RP2350B, 48 GPIOs) acting as RAM/ROM and all I/O.  The Z80
+clock is generated on GPIO32 and its reset on GPIO33.
 
 SD Card Interface
 
-Serial Port Interface
+Serial Port Interface (UART0, 115200 8N1, GPIO0/1)
 
 
 

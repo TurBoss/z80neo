@@ -55,15 +55,17 @@
 #include "z80bus_pio.h"
 
 float CPU_SPEED = 256000.0f;   // Z80 clock (PIO generator on GPIO32); INI may override
+float CPU_DUTY  = 0.50f;       // Z80 clock HIGH-time fraction (0.05..0.95)
 
 // Print the configured Z80 clock to the boot log (MHz + Hz).
 static void log_cpu_clock(void) {
     uint32_t hz = (uint32_t)(CPU_SPEED + 0.5f);
-    char b[64];
-    snprintf(b, sizeof(b), "Z80 clock: %lu.%03lu MHz (%lu Hz)\r\n",
+    char b[80];
+    snprintf(b, sizeof(b), "Z80 clock: %lu.%03lu MHz (%lu Hz, %lu%% duty)\r\n",
              (unsigned long)(hz / 1000000u),
              (unsigned long)((hz % 1000000u) / 1000u),
-             (unsigned long)hz);
+             (unsigned long)hz,
+             (unsigned long)(CPU_DUTY * 100.0f + 0.5f));
     uart_puts(UART_ID, b);
 }
 
@@ -139,7 +141,7 @@ int main(void) {
     // the GPIO base for you), otherwise the SET base wraps and drives pin 0.
     pio_set_gpio_base(clock_pio, (GPIO_PWM_SIG >= 32) ? 16 : 0);
     uint clock_off = pio_add_program(clock_pio, &z80clock_program);
-    z80clock_program_init(clock_pio, clock_sm, clock_off, CPU_SPEED, GPIO_PWM_SIG);
+    z80clock_program_init(clock_pio, clock_sm, clock_off, CPU_SPEED, CPU_DUTY, GPIO_PWM_SIG);
     log_cpu_clock();
     uart_puts(UART_ID, "Initialize SD card\r\n");
 

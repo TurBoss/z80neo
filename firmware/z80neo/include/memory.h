@@ -32,6 +32,9 @@ extern volatile bool DEBUG_ADC;
 // Z80 clock frequency in Hz (defined in main.c)
 extern float CPU_SPEED;
 
+// Z80 clock HIGH-time fraction of each period, 0.05..0.95 (defined in main.c)
+extern float CPU_DUTY;
+
 // ---------------------------------------------------------------------------
 // UART
 // ---------------------------------------------------------------------------

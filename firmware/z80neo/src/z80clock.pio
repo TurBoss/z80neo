@@ -1,30 +1,78 @@
-; z80clock.pio - Z80 clock generator on GPIO6 (GPIO_PWM_SIG)
-; Clean 50% duty cycle at any frequency via PIO, replaces PWM
+; z80clock.pio - Z80 clock generator on GPIO_PWM_SIG (GPIO32)
+;
+; Variable duty cycle: the period is set by the SM clock divider and the
+; high/low split by the X/Y loop counters, which are loaded once at start-up
+; and preserved (in ISR/Y) across every period.
+;
+; Cycle accounting (PIO clocks):
+;   mov x,isr + set pins,1 + (x_hi + 1) * jmp x--   -> high phase = x_hi + 3
+;   mov x,y   + set pins,0 + (x_lo + 1) * jmp x--   -> low  phase = x_lo + 3
+;   period = x_hi + x_lo + 6,  duty = (x_hi + 3) / period
+;
+; A JMP X-- branches on the value of X *before* the (always performed)
+; decrement, so an initial count of N runs the branch N+1 times; a count of 0
+; runs it once and falls through, which is safe because X is reloaded next.
 
 .program z80clock
-    SET PINS, 1        ; CLK HIGH
-    SET PINS, 0        ; CLK LOW
+    pull block              ; fetch packed loop counts once
+    out isr, 16             ; ISR = high-count (low half of the word)
+    out y, 16               ; Y   = low-count  (high half of the word)
+.wrap_target
+loop:
+    mov x, isr              ; X = high count (ISR preserved)
+    set pins, 1             ; CLK HIGH
+hi:
+    jmp x-- hi
+    mov x, y                ; X = low count (Y preserved)
+    set pins, 0             ; CLK LOW
+lo:
+    jmp x-- lo
+.wrap
 
 % c-sdk {
 #include "hardware/clocks.h"
 #include "hardware/pio.h"
 
+// Configure the Z80 clock SM.  freq_hz is the Z80 clock frequency; duty is the
+// fraction of each period the clock is HIGH (clamped to 5%..95% so the clock
+// can never stop).  The high/low split is encoded in the PIO program loop
+// counts; the period is the SM clock divider, so frequency and duty are set
+// independently.
 static inline void z80clock_program_init(PIO pio, unsigned int sm,
                                           unsigned int offset,
-                                          float freq_hz,
+                                          float freq_hz, float duty,
                                           unsigned int pin) {
     pio_sm_config c = z80clock_program_get_default_config(offset);
-    sm_config_set_set_pins(&c, pin, 1);  // SET base = pin, 1 pin
-    sm_config_set_out_shift(&c, false, false, 0);
+    sm_config_set_set_pins(&c, pin, 1);          // SET base = pin, 1 pin
+    sm_config_set_out_shift(&c, true, false, 0); // shift right, no autopull
 
-    // 2 instructions per clock cycle → PIO clock = freq_hz * 2
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+
+    if (duty < 0.05f) duty = 0.05f;
+    if (duty > 0.95f) duty = 0.95f;
+
     uint32_t sys_hz = clock_get_hz(clk_sys);
-    float div = (float)sys_hz / (freq_hz * 2.0f);
+
+    // Most PIO cycles we can spend per Z80 period without needing a divider < 1.
+    uint32_t max_total = (uint32_t)((float)sys_hz / freq_hz);
+    uint32_t total = 256;                         // ~0.4% duty resolution
+    if (total > max_total) total = max_total;
+    if (total < 6) total = 6;
+
+    // Phase lengths in PIO cycles (each phase has 3 fixed cycles of overhead).
+    uint32_t hi = (uint32_t)(duty * (float)total + 0.5f);
+    uint32_t lo = total - hi;
+    if (hi < 3) hi = 3;
+    if (lo < 3) lo = 3;
+    total = hi + lo;
+
+    float div = (float)sys_hz / (freq_hz * (float)total);
     if (div < 1.0f) div = 1.0f;
     sm_config_set_clkdiv(&c, div);
 
-    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
     pio_sm_init(pio, sm, offset, &c);
+    // Load the per-phase loop counts once; the program keeps them in ISR/Y.
+    pio_sm_put(pio, sm, ((uint32_t)(lo - 3) << 16) | ((hi - 3) & 0xFFFFu));
     pio_sm_set_enabled(pio, sm, true);
 }
 %}

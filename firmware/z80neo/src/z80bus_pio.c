@@ -79,23 +79,19 @@ volatile uint32_t diag_max_service_us = 0;
 volatile bool z80bus_diag_dump  = false;
 volatile bool z80bus_diag_reset = false;
 
-// Bus settle times (µs).  The 5V↔3.3V level-shifter edges are slow (weak
-// pull-ups), so these must stay generous — they are a property of the analog
-// bus, not of CPU_SPEED.  They are hidden by WAIT (the Z80 is stalled for the
-// whole service) so they do not need scaling when the clock changes; shrinking
-// them causes data-bit errors (e.g. '8' read back as '9').
-#define BUS_DATA_SETTLE_US 40
-
-// Address mux settle times (µs).  The SEL1 (low byte) and SEL2 (high byte)
-// mux + level shifter have different propagation delays.  The high byte is
-// the 5V→3.3V level-shifted side and its weak-pull-up edges are much slower,
-// so it needs a longer settle than the low byte.  Tune independently here.
-#define BUS_ADDR_LO_SETTLE_US 20
-#define BUS_ADDR_HI_SETTLE_US 10
-// I/O port (A0-A7) settle time.  An I/O write also drives the data bus (D0-D7)
-// while the port is being sampled, so it needs a little more settling than a
-// plain memory address read.
-#define BUS_IO_PORT_SETTLE_US 40
+// Bus settle times (µs).  These are a property of the analog bus (mux +
+// transceiver OE/propagation), not of CPU_SPEED, and they are hidden by WAIT
+// (the Z80 is stalled for the whole service).  They dominate Z80 throughput:
+// sum per memory access = BUS_ADDR_LO + BUS_ADDR_HI + BUS_DATA.  The Z80 bus
+// is static while stalled and the 74LVC245-class transceivers switch in
+// nanoseconds, so these are far smaller than the original 20/10/40/40, which
+// were tuned against an older board.  1/1/2/2 is validated on the current
+// board (fast, clean CP/M); raise DATA first if data-bit errors reappear
+// (e.g. an '8' read back as '9'), then the address/IO values.
+#define BUS_DATA_SETTLE_US    2
+#define BUS_ADDR_LO_SETTLE_US 1
+#define BUS_ADDR_HI_SETTLE_US 1
+#define BUS_IO_PORT_SETTLE_US 2
 
 // Short mux-switch settle (~300 ns) for reading the address through SEL1/SEL2.
 static inline void bus_settle(void) {

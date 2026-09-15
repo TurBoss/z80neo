@@ -1,0 +1,10 @@
+diskdef z80neo
+  seclen 128
+  tracks 254
+  sectrk 26
+  blocksize 1024
+  maxdir 128
+  skew 0
+  boottrk 2
+  os 2.2
+end
