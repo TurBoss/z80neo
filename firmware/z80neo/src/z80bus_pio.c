@@ -85,13 +85,17 @@ volatile bool z80bus_diag_reset = false;
 // sum per memory access = BUS_ADDR_LO + BUS_ADDR_HI + BUS_DATA.  The Z80 bus
 // is static while stalled and the 74LVC245-class transceivers switch in
 // nanoseconds, so these are far smaller than the original 20/10/40/40, which
-// were tuned against an older board.  1/1/2/2 is validated on the current
-// board (fast, clean CP/M); raise DATA first if data-bit errors reappear
-// (e.g. an '8' read back as '9'), then the address/IO values.
-#define BUS_DATA_SETTLE_US    2
-#define BUS_ADDR_LO_SETTLE_US 1
-#define BUS_ADDR_HI_SETTLE_US 1
-#define BUS_IO_PORT_SETTLE_US 2
+// were tuned against an older board.  The original 1/1/2/2 proved marginal on
+// this board: the address mux can still be slewing when bus_read_stable()
+// samples, so a fetch came back from the *previous* address (e.g. the operand
+// of CALL 0xEBDE read as 0xCD from 0xEBF0), the Z80 jumped into the signon
+// string and echoed '^@'.  3/3/3/3 is validated on the current board; raise
+// DATA first if data-bit errors reappear (e.g. an '8' read back as '9'), then
+// the address/IO values.
+#define BUS_DATA_SETTLE_US    3
+#define BUS_ADDR_LO_SETTLE_US 3
+#define BUS_ADDR_HI_SETTLE_US 3
+#define BUS_IO_PORT_SETTLE_US 3
 
 // Short mux-switch settle (~300 ns) for reading the address through SEL1/SEL2.
 static inline void bus_settle(void) {
@@ -426,6 +430,15 @@ void z80bus_pio_stats(void) {
     printf("PIO bus: %lu cycles (%lu rd, %lu wr, %lu io, %lu refresh)\n",
            pio_cycles_total, pio_cycles_read,
            pio_cycles_write, pio_cycles_io, pio_cycles_refresh);
+}
+
+// Format the active settle delays for the OLED menu, e.g. "1/1/2/2 us".
+void z80bus_pio_settle_str(char *buf, unsigned int n) {
+    snprintf(buf, n, "%lu/%lu/%lu/%lu us",
+             (unsigned long)BUS_ADDR_LO_SETTLE_US,
+             (unsigned long)BUS_ADDR_HI_SETTLE_US,
+             (unsigned long)BUS_DATA_SETTLE_US,
+             (unsigned long)BUS_IO_PORT_SETTLE_US);
 }
 bool z80bus_pio_is_active(void) { return pio_active; }
 void z80bus_pio_suspend(void) {

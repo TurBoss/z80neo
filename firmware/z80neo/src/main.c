@@ -54,7 +54,7 @@
 #include "i2c_ee.h"
 #include "z80bus_pio.h"
 
-float CPU_SPEED = 256000.0f;   // Z80 clock (PIO generator on GPIO32); INI may override
+float CPU_SPEED = 128000.0f;   // Z80 clock (PIO generator on GPIO32); INI may override
 float CPU_DUTY  = 0.50f;       // Z80 clock HIGH-time fraction (0.05..0.95)
 
 // Print the configured Z80 clock to the boot log (MHz + Hz).

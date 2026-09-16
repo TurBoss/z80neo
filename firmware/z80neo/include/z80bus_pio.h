@@ -40,6 +40,9 @@ uint32_t z80bus_pio_poll(void);
 // Print statistics to UART.
 void z80bus_pio_stats(void);
 
+// Format the active bus settle delays (µs) into buf for the OLED menu.
+void z80bus_pio_settle_str(char *buf, unsigned int n);
+
 // Check if PIO bus handler is active.
 bool z80bus_pio_is_active(void);
 

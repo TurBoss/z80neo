@@ -337,11 +337,350 @@ bool wait_for_yes_no_button(void) {
 }
 
 // ===========================================================================
+// Menu / pages (core 1)
+//
+// The Z80 keeps running while the menu is open, so the pages read live globals.
+// Destructive actions (bank select/clear, file load) pause it first via the
+// disabled/confirmed handshake so core 0 stops the bus and clock.
+// ===========================================================================
+
+typedef enum {
+    PAGE_SYSTEM = 0, PAGE_CPU, PAGE_BUS, PAGE_MEM,
+    PAGE_DISK, PAGE_DIAG, PAGE_FILES
+} page_id_t;
+
+static const char *const menu_labels[] = {
+    "System", "CPU / Clock", "Bus / Timing", "Memory & Banks",
+    "Disk Drives", "Diagnostics", "Files / Load"
+};
+#define MENU_ITEMS   ((int)(sizeof(menu_labels) / sizeof(menu_labels[0])))
+#define MENU_VISIBLE 6
+#define UI_TICK      8
+
+static int  ui_menu_sel = 0, ui_menu_top = 0;
+static int  ui_page = -1, ui_page_sel = 0;
+static bool ui_arm_clear = false;
+static button_state ui_last_btn = NONE;
+static int  ui_file_idx = 1, ui_file_count = 0;
+
+static void ui_z80_pause(void) {
+    reset_hold();
+    confirmed = false;
+    disabled = true;
+    while (!confirmed) tight_loop_contents();
+}
+
+static void ui_z80_resume(void) {
+    disabled = false;
+    reset_release();
+}
+
+static void ui_render(char lines[LINES][24]) {
+    clear_screen0();
+    for (int i = 0; i < LINES; i++)
+        if (lines[i][0]) WriteString(buf, 0, i * 8, lines[i]);
+    render(buf, &frame_area);
+}
+
+static void ui_draw_menu(void) {
+    char l[LINES][24];
+    memset(l, 0, sizeof(l));
+    snprintf(l[0], 24, "== Z80 %lukHz ==", (unsigned long)(CPU_SPEED / 1000.0f));
+    for (int i = 0; i < MENU_VISIBLE; i++) {
+        int idx = ui_menu_top + i;
+        if (idx >= MENU_ITEMS) break;
+        snprintf(l[i + 1], 24, "%c%-15.15s",
+                 idx == ui_menu_sel ? '>' : ' ', menu_labels[idx]);
+    }
+    snprintf(l[7], 24, "OK:open  C:close");
+    ui_render(l);
+}
+
+static void ui_draw_system(void) {
+    char l[LINES][24];
+    memset(l, 0, sizeof(l));
+    snprintf(l[0], 24, "== SYSTEM ==");
+    snprintf(l[1], 24, "%s", VERSION);
+    snprintf(l[2], 24, "%.16s", MACHINE);
+    snprintf(l[3], 24, "BANKS %dx16K", MAX_BANKS);
+    snprintf(l[4], 24, "PSRAM %s", psram_base ? "OK" : "none");
+    snprintf(l[5], 24, "CLK %lu kHz", (unsigned long)(CPU_SPEED / 1000.0f));
+    snprintf(l[6], 24, "DUTY %lu%%", (unsigned long)(CPU_DUTY * 100.0f + 0.5f));
+    snprintf(l[7], 24, "OK/BACK: menu");
+    ui_render(l);
+}
+
+static void ui_draw_cpu(void) {
+    char l[LINES][24], s[24];
+    memset(l, 0, sizeof(l));
+    z80bus_pio_settle_str(s, sizeof(s));
+    snprintf(l[0], 24, "== CPU / CLOCK ==");
+    snprintf(l[1], 24, "FREQ %lu Hz", (unsigned long)CPU_SPEED);
+    snprintf(l[2], 24, "DUTY %lu%%", (unsigned long)(CPU_DUTY * 100.0f + 0.5f));
+    snprintf(l[3], 24, "SET %s", s);
+    snprintf(l[4], 24, "MAX %lu us", (unsigned long)diag_max_service_us);
+    snprintf(l[5], 24, "CYC %lu", (unsigned long)pio_cycles_total);
+    snprintf(l[6], 24, "IO %lu", (unsigned long)pio_cycles_io);
+    snprintf(l[7], 24, "OK/BACK: menu");
+    ui_render(l);
+}
+
+static void ui_draw_bus(void) {
+    char l[LINES][24];
+    memset(l, 0, sizeof(l));
+    snprintf(l[0], 24, "== BUS / TIMING ==");
+    snprintf(l[1], 24, "TOT %lu", (unsigned long)pio_cycles_total);
+    snprintf(l[2], 24, "RD %lu", (unsigned long)pio_cycles_read);
+    snprintf(l[3], 24, "WR %lu", (unsigned long)pio_cycles_write);
+    snprintf(l[4], 24, "IO %lu", (unsigned long)pio_cycles_io);
+    snprintf(l[5], 24, "REF %lu", (unsigned long)pio_cycles_refresh);
+    snprintf(l[6], 24, "TO %lu/%lu", (unsigned long)diag_mem_timeouts,
+             (unsigned long)diag_io_timeouts);
+    snprintf(l[7], 24, "OK/BACK: menu");
+    ui_render(l);
+}
+
+static void ui_draw_mem(void) {
+    char l[LINES][24];
+    memset(l, 0, sizeof(l));
+    snprintf(l[0], 24, "== MEMORY/BANKS ==");
+    for (int i = 0; i < MAX_BANKS; i++)
+        snprintf(l[i + 1], 24, "%c B%d %.11s",
+                 (i == ui_page_sel) ? '>' : ' ', i, BANK_PROG[i]);
+    snprintf(l[5], 24, "SEL B%d", cur_bank);
+    if (ui_arm_clear)
+        snprintf(l[6], 24, "BACK=CLR B%d!", ui_page_sel);
+    else
+        snprintf(l[6], 24, "OK:set B%d", ui_page_sel);
+    snprintf(l[7], 24, "C:menu BACK:clr");
+    ui_render(l);
+}
+
+static void ui_draw_disk(void) {
+    char l[LINES][24];
+    uint8_t drv, trk, sec;
+    memset(l, 0, sizeof(l));
+    cpm_disk_state(&drv, &trk, &sec);
+    snprintf(l[0], 24, "== DISK DRIVES ==");
+    snprintf(l[1], 24, "MOUNT %u", (unsigned)cpm_disk_count());
+    snprintf(l[2], 24, "DRIVE %c", (drv < 26) ? ('A' + drv) : '?');
+    snprintf(l[3], 24, "TRK %03u SEC %02u", trk, sec);
+    snprintf(l[4], 24, "GEOM 254x26 1K");
+    snprintf(l[5], 24, "IMG CPMDISK0-14");
+    snprintf(l[6], 24, "C%u/%u drives", (unsigned)cpm_disk_count(), (unsigned)CPM_DRIVES);
+    snprintf(l[7], 24, "OK/BACK: menu");
+    ui_render(l);
+}
+
+static void ui_draw_diag(void) {
+    char l[LINES][24];
+    memset(l, 0, sizeof(l));
+    snprintf(l[0], 24, "== DIAGNOSTICS ==");
+    snprintf(l[1], 24, "%cRAM viewer", ui_page_sel == 0 ? '>' : ' ');
+    snprintf(l[2], 24, "%cDump bus trace", ui_page_sel == 1 ? '>' : ' ');
+    snprintf(l[3], 24, "%cReset counters", ui_page_sel == 2 ? '>' : ' ');
+    snprintf(l[6], 24, "UP/DN OK:run");
+    snprintf(l[7], 24, "CANCEL: menu");
+    ui_render(l);
+}
+
+static void ui_draw_files(void) {
+    char l[LINES][24];
+    memset(l, 0, sizeof(l));
+    snprintf(l[0], 24, "== FILES / LOAD ==");
+    if (ui_file_count) {
+        snprintf(l[1], 24, "%d / %d", ui_file_idx, ui_file_count);
+        snprintf(l[2], 24, "%.16s", file);
+    } else {
+        snprintf(l[1], 24, "No .HEX files");
+        snprintf(l[2], 24, "-");
+    }
+    snprintf(l[3], 24, "OK: load");
+    snprintf(l[4], 24, "UP/DN: pick");
+    snprintf(l[5], 24, "BACK: rescan");
+    snprintf(l[6], 24, "CANCEL: menu");
+    ui_render(l);
+}
+
+static void ui_draw_page(void) {
+    switch (ui_page) {
+    case PAGE_SYSTEM: ui_draw_system(); break;
+    case PAGE_CPU:    ui_draw_cpu();    break;
+    case PAGE_BUS:    ui_draw_bus();    break;
+    case PAGE_MEM:    ui_draw_mem();    break;
+    case PAGE_DISK:   ui_draw_disk();   break;
+    case PAGE_DIAG:   ui_draw_diag();   break;
+    case PAGE_FILES:  ui_draw_files();  break;
+    default:          ui_draw_menu();   break;
+    }
+}
+
+static void ui_menu_move(int d) {
+    ui_menu_sel += d;
+    if (ui_menu_sel < 0) ui_menu_sel = MENU_ITEMS - 1;
+    if (ui_menu_sel >= MENU_ITEMS) ui_menu_sel = 0;
+    if (ui_menu_sel < ui_menu_top) ui_menu_top = ui_menu_sel;
+    if (ui_menu_sel >= ui_menu_top + MENU_VISIBLE)
+        ui_menu_top = ui_menu_sel - MENU_VISIBLE + 1;
+}
+
+static void ui_files_scan(void) {
+    ui_z80_pause();
+    ui_file_count = count_files();
+    if (ui_file_idx > ui_file_count) ui_file_idx = ui_file_count ? ui_file_count : 1;
+    if (ui_file_idx < 1) ui_file_idx = 1;
+    if (ui_file_count) select_file_no(ui_file_idx);
+    cpm_disk_init();          // browsing re-mounts the volume; restore cpm handles
+    ui_z80_resume();
+}
+
+static void ui_files_step(int d) {
+    if (!ui_file_count) return;
+    ui_file_idx += d;
+    if (ui_file_idx < 1) ui_file_idx = ui_file_count;
+    if (ui_file_idx > ui_file_count) ui_file_idx = 1;
+    ui_z80_pause();
+    select_file_no(ui_file_idx);
+    cpm_disk_init();
+    ui_z80_resume();
+}
+
+static void ui_files_load(void) {
+    if (!ui_file_count) return;
+    ui_z80_pause();
+    if (select_file_no(ui_file_idx) == ui_file_idx) {
+        load_file(false);
+        cpm_disk_init();                 // load_file() unmounted "0:"
+    }
+    ui_z80_resume();
+}
+
+static void ui_mem_action(button_state b) {
+    if (b == UP) {
+        ui_page_sel = (ui_page_sel + MAX_BANKS - 1) % MAX_BANKS;
+        ui_arm_clear = false;
+    } else if (b == DOWN) {
+        ui_page_sel = (ui_page_sel + 1) % MAX_BANKS;
+        ui_arm_clear = false;
+    } else if (b == OK) {
+        ui_z80_pause();
+        cur_bank = ui_page_sel;
+        ui_z80_resume();
+        ui_arm_clear = false;
+    } else if (b == BACK) {
+        if (!ui_arm_clear) {
+            ui_arm_clear = true;
+        } else {
+            ui_z80_pause();
+            clear_bank(ui_page_sel);
+            ui_z80_resume();
+            ui_arm_clear = false;
+        }
+    } else {
+        ui_arm_clear = false;
+    }
+    ui_draw_mem();
+}
+
+static void ui_diag_action(button_state b) {
+    if (b == UP) {
+        ui_page_sel = (ui_page_sel + 2) % 3;
+    } else if (b == DOWN) {
+        ui_page_sel = (ui_page_sel + 1) % 3;
+    } else if (b == OK) {
+        switch (ui_page_sel) {
+        case 0:
+            tbmon = true;
+            tbmon_idx = 0;
+            tbmon_loaded = false;
+            display_ram_viewer();
+            return;
+        case 1: z80bus_diag_dump = true; break;
+        case 2: z80bus_diag_reset = true; break;
+        }
+    }
+    ui_draw_diag();
+}
+
+static void ui_open_page(int page) {
+    ui_page = page;
+    ui_page_sel = 0;
+    ui_arm_clear = false;
+    if (page == PAGE_FILES) ui_files_scan();
+    ui_draw_page();
+}
+
+static void ui_page_action(button_state b) {
+    if (b == CANCEL) {
+        ui_page = -1;
+        ui_arm_clear = false;
+        ui_draw_menu();
+        return;
+    }
+    switch (ui_page) {
+    case PAGE_MEM:
+        ui_mem_action(b);
+        return;
+    case PAGE_DIAG:
+        ui_diag_action(b);
+        return;
+    case PAGE_FILES:
+        if (b == UP)        ui_files_step(-1);
+        else if (b == DOWN) ui_files_step(+1);
+        else if (b == OK)   ui_files_load();
+        else if (b == BACK) ui_files_scan();
+        ui_draw_files();
+        return;
+    default:
+        if (b == OK || b == BACK) {
+            ui_page = -1;
+            ui_draw_menu();
+        }
+        return;
+    }
+}
+
+static void ui_handle_button(button_state b) {
+    if (b == CANCEL2) b = CANCEL;
+    if (b == NONE || b == ui_last_btn) {
+        ui_last_btn = b;
+        return;
+    }
+
+    if (tbmon) {
+        if (b == UP) {
+            tbmon_idx = (tbmon_idx >= BYTES_PER_ROW)
+                        ? tbmon_idx - BYTES_PER_ROW : 0;
+            display_ram_viewer();
+        } else if (b == DOWN) {
+            tbmon_idx += BYTES_PER_ROW;
+            if (tbmon_idx > RAM_SIZE - (BYTES_PER_ROW * LINES)) tbmon_idx = 0;
+            display_ram_viewer();
+        } else {
+            tbmon = false;
+            tbmon_loaded = false;
+            tbmon_idx = 0;
+            ui_page = -1;
+            ui_draw_menu();
+        }
+    } else if (ui_page < 0) {
+        switch (b) {
+        case UP:   ui_menu_move(-1); ui_draw_menu(); break;
+        case DOWN: ui_menu_move(+1); ui_draw_menu(); break;
+        case OK:   ui_open_page(ui_menu_sel); break;
+        default: break;
+        }
+    } else {
+        ui_page_action(b);
+    }
+    ui_last_btn = b;
+}
+
+// ===========================================================================
 // Main display loop (runs on core 1)
 // ===========================================================================
 
 void display_loop(void) {
-    disp_mode cur_disp_mode = ON;
     button_state buttons = NONE;
     bool buttons_enabled = false;   // keypad verified to rest at NONE
     bool buttons_checked = false;
@@ -359,102 +698,14 @@ void display_loop(void) {
         }
     }
 
-    // Partial render area for the fast-updating monitor lines (pages 4-7).
-    struct render_area status_area = {
-        .start_col = 0,
-        .end_col = SSD1306_WIDTH - 1,
-        .start_page = 4,
-        .end_page = 7
-    };
-    calc_render_area_buflen(&status_area);
-
     while (true) {
         static uint8_t fast_frame = 0;
-        if (cur_disp_mode != OFF) {
-            // Main page.  Slow lines refresh on the full frame; the fast lines
-            // (pages 4-7) render every iteration via status_area.  16-char limit.
-            if ((fast_frame & 0x1F) == 0) {
-                uint8_t drv, trk, sec;
-                cpm_disk_state(&drv, &trk, &sec);
 
-                sprintf(line_buffer0, "Z80NEO %3lukHz",
-                        (unsigned long)(CPU_SPEED / 1000.0f));
-                WriteString(buf, 0, 0 * 8, line_buffer0);
+        // The menu is the whole UI.  Redraw the current view periodically so the
+        // live pages stay fresh; the RAM viewer refreshes on scroll only.
+        if (!tbmon && ((fast_frame & (UI_TICK - 1)) == 0))
+            ui_draw_page();
 
-                sprintf(line_buffer1, "R%04lx W%04lx I%03lx",
-                        dr_op & 0xFFFF, dw_op & 0xFFFF, io_op & 0xFFF);
-                WriteString(buf, 0, 1 * 8, line_buffer1);
-
-                sprintf(line_buffer2, "BNK %d DSK %c",
-                        cur_bank, (drv < 26) ? ('A' + drv) : '?');
-                WriteString(buf, 0, 2 * 8, line_buffer2);
-
-                sprintf(line_buffer3, "TRK %03u SEC %02u", trk, sec);
-                WriteString(buf, 0, 3 * 8, line_buffer3);
-            }
-
-            sprintf(line_buffer4, "RX %u TX %u", rx_count, tx_count);
-            WriteString(buf, 0, 4 * 8, line_buffer4);
-
-            sprintf(line_buffer5, "TO %lu MAX %luus",
-                    (unsigned long)diag_mem_timeouts,
-                    (unsigned long)diag_max_service_us);
-            WriteString(buf, 0, 5 * 8, line_buffer5);
-
-            sprintf(line_buffer6, "MRD %02x MWR %02x", mem_r_op, mem_w_op);
-            WriteString(buf, 0, 6 * 8, line_buffer6);
-
-            sprintf(line_buffer7, "IOR %02x IOW %02x", io_r_op, io_w_op);
-            WriteString(buf, 0, 7 * 8, line_buffer7);
-
-            if ((fast_frame & 0x1F) == 0)
-                render(buf, &frame_area);
-            else
-                render(buf, &status_area);
-        }
-
-        if ((cur_disp_mode == OFF) & (tbmon == false)) {
-
-            // Slow-changing lines (full frame every 32 iterations)
-            if ((fast_frame & 0x1F) == 0) {  // every 32 iterations
-                sprintf(line_buffer0, "Z80 %3lu kHz", (unsigned long)(CPU_SPEED / 1000.0f));
-                WriteString(buf, 0, 0 * 8, line_buffer0);
-
-                sprintf(line_buffer1, "BNK %d REF %lx",
-                        cur_bank, (unsigned long)(pio_cycles_refresh & 0xFFFF));
-                WriteString(buf, 0, 1 * 8, line_buffer1);
-
-                sprintf(line_buffer2, "TO %lu MAX %luus",
-                        (unsigned long)diag_mem_timeouts,
-                        (unsigned long)diag_max_service_us);
-                WriteString(buf, 0, 2 * 8, line_buffer2);
-
-                sprintf(line_buffer3, "R%04lx W%04lx",
-                        dr_op & 0xFFFF, dw_op & 0xFFFF);
-                WriteString(buf, 0, 3 * 8, line_buffer3);
-            }
-
-            // Fast-updating monitor lines (every iteration)
-            sprintf(line_buffer4, "ADDR %04x", m_adr);
-            WriteString(buf, 0, 4 * 8, line_buffer4);
-
-            sprintf(line_buffer5, "MRD %02x MWR %02x", mem_r_op, mem_w_op);
-            WriteString(buf, 0, 5 * 8, line_buffer5);
-
-            sprintf(line_buffer6, "IOR %02x IOW %02x", io_r_op, io_w_op);
-            WriteString(buf, 0, 6 * 8, line_buffer6);
-
-            sprintf(line_buffer7, "RX %u TX %u", rx_count, tx_count);
-            WriteString(buf, 0, 7 * 8, line_buffer7);
-
-            // Render only status pages (4-7) for speed; full frame every 32 iterations
-            if ((fast_frame & 0x1F) == 0)
-                render(buf, &frame_area);
-            else
-                render(buf, &status_area);
-        }
-
-        // Shared by both screens so their full/partial render cadence is the same.
         fast_frame++;
 
         // Once boot is done, confirm the keypad actually rests at NONE before
@@ -473,125 +724,13 @@ void display_loop(void) {
 
         buttons = read_button_state_debounced();
 
-        // Only handle buttons once the main loop has finished booting and
-        // released the Z80.  Before that, the ADC can read a spurious value
-        // (floating input during init) that would release the Z80 reset early
-        // and deadlock the main loop's boot sequence.
-        if (system_up && buttons_enabled && buttons != NONE) {
-            reset_hold();
-            confirmed = false;
-            disabled = true;
-
-            while (!confirmed) {
-            };
-
-            switch (buttons) {
-            case UP:
-                if (!tbmon_loaded) {
-                    load();
-                    sleep_ms(DISPLAY_DELAY);
-                    sleep_ms(DISPLAY_DELAY);
-                }
-                if (tbmon) {
-                    if (tbmon_loaded) {
-                        tbmon_idx = (tbmon_idx >= BYTES_PER_ROW)
-                                    ? tbmon_idx - BYTES_PER_ROW : 0;
-                    }
-                    tbmon_loaded = true;
-                    display_ram_viewer();
-                } else {
-                    if (cur_disp_mode == ON)
-                        show_info();
-                    else
-                        clear_screen();
-                }
-                break;
-
-            case DOWN:
-                if (tbmon) {
-                    if (tbmon_loaded) {
-                        tbmon_idx += BYTES_PER_ROW;
-                        if (tbmon_idx > RAM_SIZE - (BYTES_PER_ROW * LINES))
-                            tbmon_idx = 0;
-                    }
-                    tbmon_loaded = true;
-                    display_ram_viewer();
-                } else {
-                    if (cur_disp_mode == ON)
-                        show_info();
-                    else
-                        clear_screen();
-                }
-                break;
-
-            case BACK:
-                cur_bank = (cur_bank + 1) % (MAX_BANKS);
-                clear_screen();
-                sprintf(text_buffer, "BANK #%02d", cur_bank);
-                WriteString(buf, 0, 0, text_buffer);
-                render(buf, &frame_area);
-                sleep_ms(DISPLAY_DELAY);
-                sleep_ms(DISPLAY_DELAY);
-                if (cur_disp_mode == ON)
-                    show_info();
-                else
-                    clear_screen();
-                break;
-
-            case OK:
-                clear_screen();
-                if (cur_disp_mode == OFF) {
-                    tbmon = true;
-                    wait_for_button_release();
-                    print_string(0, 2, "*    TB-MON    *");
-                    print_string(0, 3, "*     v 0.1    *");
-                    print_string(0, 4, "*    TurBoos   *");
-                    print_string(0, 5, "*     2025     *");
-                } else {
-                    sprintf(text_buffer, "CLEAR BANK #%02d?", cur_bank);
-                    WriteString(buf, 0, 0, text_buffer);
-                    render(buf, &frame_area);
-                    wait_for_button_release();
-
-                    if (wait_for_yes_no_button()) {
-                        clear_bank(cur_bank);
-                        print_string(0, 3, "CLEARED!");
-                    } else
-                        print_string(0, 3, "CANCELED!");
-
-                    sleep_ms(DISPLAY_DELAY);
-                    sleep_ms(DISPLAY_DELAY);
-                    if (cur_disp_mode == ON)
-                        show_info();
-                    else
-                        clear_screen();
-                }
-                break;
-
-            case CANCEL:
-                if (tbmon) {
-                    tbmon = false;
-                    tbmon_loaded = false;
-                    tbmon_idx = 0;
-                }
-                if (cur_disp_mode == OFF)
-                    cur_disp_mode = ON;
-                else
-                    cur_disp_mode = OFF;
-
-                sleep_ms(DISPLAY_DELAY);
-                sleep_ms(DISPLAY_DELAY);
-
-                if (cur_disp_mode == ON)
-                    show_info();
-                else
-                    clear_screen();
-                break;
-            }
-
-            disabled = false;
-            reset_release();
-        }
+        // Only handle buttons once boot has finished and released the Z80, and
+        // only if the keypad is trustworthy.  ui_handle_button() is
+        // non-blocking: it acts on the press edge and returns.
+        if (system_up && buttons_enabled)
+            ui_handle_button(buttons);
+        else
+            ui_last_btn = buttons;
     }
 }
 

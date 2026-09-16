@@ -210,21 +210,27 @@ uint8_t io_read_port(uint8_t port) {
     switch (port) {
     case SERIAL_PORT_1:  // 0x80 — serial data (repo build)
     case 0x83: {         // 0x83 — serial data (older SD-card build)
-        // Pick up anything the main loop has not drained yet.
+        // Pick up anything the main loop has not drained yet.  read_uart_char()
+        // returns 0 only when the ring is empty; with the bus settle fixed the
+        // Z80 no longer samples this port ahead of CONSTAT, so a spurious NUL
+        // (which CP/M would echo as '^@') does not occur.
         uart_rx_poll();
         uint8_t ch = read_uart_char();
+        rx_data_available = (rx_count > 0);
+        serial_status_1 = rx_data_available ? (serial_status_1 | 0x01) : (serial_status_1 & ~0x01);
         diag_con[diag_con_idx++ & 63] = ch & 0x7F;
-        serial_status_1 = (rx_data_available) ? (serial_status_1 | 0x01) : (serial_status_1 & ~0x01);
         return ch;
     }
     case 0xD1: return i2c_ee_read();
     case 0xE0: return cpm_disk_read_port(0xE0);
     case 0xE2: return cpm_disk_read_port(0xE2);
     case SERIAL_STATUS_1:
-        // Only consult rx_data_available (software buffer), not uart_is_readable
-        // (hardware FIFO).  Mixing the two causes a race: the status port says
-        // "data ready" but read_uart_char() finds rx_count==0 and returns NUL.
-        // The main loop drains the HW FIFO into rx_buffer every iteration.
+        // Drain the HW FIFO first so a byte already received is reflected, then
+        // derive the ready bit from the ring itself.  rx_data_available can go
+        // stale (set without a ring byte), and a stale "ready" makes CONSTAT
+        // lie: the Z80 then reads a phantom byte, and CP/M echoes it as '^@'.
+        uart_rx_poll();
+        rx_data_available = (rx_count > 0);
         serial_status_1 = rx_data_available ? (serial_status_1 | 0x01) : (serial_status_1 & ~0x01);
         return serial_status_1;
     case 0xF0: return mmu_page[0];
@@ -326,7 +332,8 @@ void uart_status_handler(void) {
         tx_tail = (tx_tail + 1) % UART_TX_BUF_SIZE;
         tx_count--;
     }
-    rx_data_available = rx_data_available || uart_is_readable(UART_ID);
+    uart_rx_poll();
+    rx_data_available = (rx_count > 0);
     serial_status_1 = (uart_is_writable(UART_ID) && tx_count < UART_TX_BUF_SIZE)
                       ? (serial_status_1 | 0x02) : (serial_status_1 & ~0x02);
     if (rx_data_available) serial_status_1 |= 0x01;
