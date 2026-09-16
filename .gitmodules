@@ -3,4 +3,4 @@
 	url = https://github.com/TurBoss/pico_fatfs
 [submodule "firmware/z80neo/libs/pico_fatfs"]
 	path = firmware/z80neo/libs/pico_fatfs
-	url = https://github.com/TurBoss/pico_fatfs
+	url = git@gitlab.jauriarts.org:turboss/fatfs.git
