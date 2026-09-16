@@ -357,6 +357,7 @@ static const char *const menu_labels[] = {
 #define MENU_VISIBLE 6
 #define UI_TICK      8
 
+static bool ui_home = true;      // idle: show the text logo, not the menu
 static int  ui_menu_sel = 0, ui_menu_top = 0;
 static int  ui_page = -1, ui_page_sel = 0;
 static bool ui_arm_clear = false;
@@ -380,6 +381,25 @@ static void ui_render(char lines[LINES][24]) {
     for (int i = 0; i < LINES; i++)
         if (lines[i][0]) WriteString(buf, 0, i * 8, lines[i]);
     render(buf, &frame_area);
+}
+
+static void ui_draw_logo(void) {
+    // 16 columns x 8 rows at the 8x8 OLED font.
+    static const char *const art[LINES] = {
+        "+==============+",
+        "|    Z80NEO    |",
+        "|   CP/M 2.2   |",
+        "|              |",
+        "| PRESS BUTTON |",
+        "|   FOR MENU   |",
+        "| TURBOSS 2026 |",
+        "+==============+",
+    };
+    char l[LINES][24];
+    memset(l, 0, sizeof(l));
+    for (int i = 0; i < LINES; i++)
+        snprintf(l[i], 24, "%s", art[i]);
+    ui_render(l);
 }
 
 static void ui_draw_menu(void) {
@@ -503,6 +523,7 @@ static void ui_draw_files(void) {
 }
 
 static void ui_draw_page(void) {
+    if (ui_home) { ui_draw_logo(); return; }
     switch (ui_page) {
     case PAGE_SYSTEM: ui_draw_system(); break;
     case PAGE_CPU:    ui_draw_cpu();    break;
@@ -647,7 +668,12 @@ static void ui_handle_button(button_state b) {
         return;
     }
 
-    if (tbmon) {
+    if (ui_home) {
+        // Any button opens the menu from the idle logo screen.
+        ui_home = false;
+        ui_page = -1;
+        ui_draw_menu();
+    } else if (tbmon) {
         if (b == UP) {
             tbmon_idx = (tbmon_idx >= BYTES_PER_ROW)
                         ? tbmon_idx - BYTES_PER_ROW : 0;
@@ -668,6 +694,7 @@ static void ui_handle_button(button_state b) {
         case UP:   ui_menu_move(-1); ui_draw_menu(); break;
         case DOWN: ui_menu_move(+1); ui_draw_menu(); break;
         case OK:   ui_open_page(ui_menu_sel); break;
+        case CANCEL: ui_home = true; ui_draw_logo(); break;
         default: break;
         }
     } else {
