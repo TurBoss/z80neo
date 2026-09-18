@@ -222,7 +222,9 @@ static void handle_mem(void) {
     while (gpio_get(RD_INPUT) && gpio_get(WR_INPUT) && !gpio_get(MREQ_INPUT) && --to)
         tight_loop_contents();
     if (gpio_get(RD_INPUT) && gpio_get(WR_INPUT)) {
-        // Refresh / spurious: release WAIT and re-arm without servicing.
+        // Refresh / spurious: release WAIT and re-arm IMMEDIATELY (ack bit0 =
+        // 0).  The Z80 is not stalled by WAIT during refresh and the next M1
+        // may already have started; see the refresh-race note in the .pio.
         pio_sm_put(bus_pio, mem_sm, 0);
         pio_cycles_refresh++;
         diag_record(4, 0, 0);
@@ -269,7 +271,7 @@ static void handle_mem(void) {
         diag_last_al[diag_last_idx & (DIAG_FIRST_N-1)] = al;
         diag_last_ah[diag_last_idx & (DIAG_FIRST_N-1)] = ah;
         diag_last_idx++;
-        pio_sm_put(bus_pio, mem_sm, 0);  // release PIO WAIT
+        pio_sm_put(bus_pio, mem_sm, 1);  // release PIO WAIT (serviced: wait for cycle end)
         // Keep the data on the bus until the Z80 has latched it at the T3
         // rising edge (MREQ goes HIGH at cycle end) — releasing earlier at
         // 1 MHz would let the Z80 sample garbage.  Bounded so a stuck MREQ
@@ -304,7 +306,7 @@ static void handle_mem(void) {
         uint8_t d = bus_read_stable();
         gpio_put(SEL3_OUT, 1);
         mmu_write(addr, d);
-        pio_sm_put(bus_pio, mem_sm, 0);  // release PIO WAIT
+        pio_sm_put(bus_pio, mem_sm, 1);  // release PIO WAIT (serviced: wait for cycle end)
 
         int mto = 200000;
         while (!gpio_get(MREQ_INPUT) && --mto) {
@@ -326,7 +328,7 @@ static void handle_mem(void) {
         pio_cycles_write++; m_adr = addr; mem_w_op = d; d_adr = addr; dw_op++;
         diag_record(1, addr, d);
     } else {
-        pio_sm_put(bus_pio, mem_sm, 0);  // shouldn't happen, but don't hang
+        pio_sm_put(bus_pio, mem_sm, 1);  // shouldn't happen, but don't hang
     }
     uint32_t dt = time_us_32() - t0;
     if (dt > diag_max_service_us) diag_max_service_us = dt;

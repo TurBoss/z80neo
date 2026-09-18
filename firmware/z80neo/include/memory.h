@@ -12,10 +12,17 @@
 
 #define FILE_LENGTH    17
 #define FILE_BUFF_SIZE 1024
-#define FILE_EXT       "*.HEX"
+
+// Accepted program images (Intel HEX).  CP/M images use ".hex", the
+// Fuzix/z80dk toolchain emits ".ihx"; both are listed by the Files menu and
+// selectable as BANK_PROG[].  Case-insensitive.
+bool is_prog_file(const char *name);
 
 #define RAM_SIZE       16384
-#define MAX_BANKS      4
+// 20 x 16K internal banks (320K of the RP2350's 520K SRAM).  CP/M only ever
+// maps 0x20-0x23 (banks 0-3); Fuzix uses 0x20-0x23 for the kernel and
+// 0x24-0x33 as user pages.
+#define MAX_BANKS      20
 #define PSRAM_BANKS    4
 #define TOTAL_BANKS    (MAX_BANKS + PSRAM_BANKS)
 
@@ -44,6 +51,10 @@ extern float CPU_DUTY;
 #define DATA_BITS  8
 #define STOP_BITS  1
 #define PARITY     UART_PARITY_NONE
+
+// Console baud rate (defined in memory.c).  Defaults to BAUD_RATE and may be
+// overridden by a trailing "BAUD <n>" line in Z80NEO.INI.
+extern uint32_t UART_BAUD;
 
 // UART RX buffer
 #define UART_BUF_SIZE 256
@@ -115,6 +126,10 @@ extern float CPU_DUTY;
 #define GPIO_PWM_SIG 32   // Z80 clock output (GPIO32 → Z80 CLK)
 
 #define RESET_OUT 33      // Z80 reset output (GPIO33 → Z80 RESET)
+
+// Z80 /INT (active low).  Requires the board mod that wires this GPIO to
+// Z80 pin 16 through a 5 V tolerant buffer.  Idle high.
+#define INT_OUT 6
 
 #define ADC_KEYS_INPUT 40   // ADC KEYS
 
@@ -191,6 +206,16 @@ extern bool spi_configured;
 extern char   MACHINE[FILE_LENGTH];
 extern char   BANK_PROG[4][FILE_LENGTH];
 
+// Fuzix support: full-RAM loader, hardware /INT and the raw LBA block device
+extern volatile bool    fuzix_mode;
+extern volatile uint8_t fuzix_irq_pending;
+
+#define FUZIX_IRQ_TIMER  0x01
+#define FUZIX_IRQ_SERIAL 0x02
+#define FUZIX_IRQ_STATUS 0x82
+
+void fuzix_int_raise(uint8_t bit);
+
 // ---------------------------------------------------------------------------
 // Function prototypes
 // ---------------------------------------------------------------------------
@@ -228,6 +253,9 @@ char *init_and_mount_sd_card(void);
 
 // File operations
 void load_file(bool quiet);
+
+// Enable the Cortex-M33 FPU on the calling core (see main.c).
+void enable_fpu(void);
 void load(void);
 void load_init_progs(void);
 

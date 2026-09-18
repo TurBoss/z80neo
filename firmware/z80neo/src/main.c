@@ -50,6 +50,7 @@
 // Project modules
 #include "display.h"
 #include "cpm_disk.h"
+#include "fuzix_disk.h"
 #include "memory.h"
 #include "i2c_ee.h"
 #include "z80bus_pio.h"
@@ -73,7 +74,22 @@ static void log_cpu_clock(void) {
 // main()
 // ===========================================================================
 
+// Enable the Cortex-M33 FPU (CP10/CP11).  The SDK is compiled with
+// -march=armv8-m.main+fp, so parts of it (notably the pico_time alarm-pool IRQ
+// handler) execute VFP instructions such as `vpush {d8}`.  The RP2350 RCP
+// bring-up in crt0.S stores CPACR with only the CP7 bits, wiping the FPU
+// enable that runtime_init sets, so the first VFP instruction traps as a
+// UsageFault (CFSR UFSR NOCP) and the firmware dies in isr_hardfault, leaving
+// the PIO holding Z80 WAIT.  Re-enable it before anything can use it.
+void enable_fpu(void) {
+    volatile uint32_t *cpacr = (volatile uint32_t *)0xE000ED88u;
+    *cpacr |= (0xFu << 20);         // CP10/CP11: full access
+    __asm__ volatile("dsb\nisb" ::: "memory");
+}
+
 int main(void) {
+    enable_fpu();
+
     // UART
     uart_init(UART_ID, BAUD_RATE);
     sleep_ms(50);
@@ -175,6 +191,12 @@ int main(void) {
     gpio_set_function(RESET_OUT, GPIO_FUNC_SIO);
     reset_hold();
 
+    // Z80 /INT (Fuzix hardware mod).  Active low; idle high.
+    gpio_init(INT_OUT);
+    gpio_set_dir(INT_OUT, GPIO_OUT);
+    gpio_set_function(INT_OUT, GPIO_FUNC_SIO);
+    gpio_put(INT_OUT, 1);
+
     // Init ADC keys
     uart_puts(UART_ID, "Init Keys\r\n");
     adc_init();
@@ -222,6 +244,14 @@ int main(void) {
 
     sd_read_init();
 
+    // Apply the console baud rate read from Z80NEO.INI.  Everything printed up
+    // to here (boot log/banner) is at the BAUD_RATE default; the Z80/CP/M
+    // console runs at UART_BAUD from this point on.
+    if (UART_BAUD != BAUD_RATE) {
+        uart_tx_wait_blocking(UART_ID);
+        uart_set_baudrate(UART_ID, UART_BAUD);
+    }
+
     clear_screen();
 
     uart_puts(UART_ID, "Loading program...\r\n");
@@ -260,7 +290,11 @@ int main(void) {
     }
 #endif
 
-    	if (cpm_disk_init()) {
+     	if (fuzix_mode) {
+    	    uart_puts(UART_ID, fuzix_disk_init()
+    	                      ? "Fuzix disk: FUZIX.IMG mounted\r\n"
+    	                      : "Fuzix disk: FUZIX.IMG not found\r\n");
+    	} else if (cpm_disk_init()) {
     	    char cpm_msg[48];
     	    snprintf(cpm_msg, sizeof(cpm_msg), "CP/M disk: %u drive(s) mounted\r\n",
     	             (unsigned)cpm_disk_count());
@@ -387,7 +421,7 @@ int main(void) {
     irq_set_enabled(UART_IRQ, false);
     uart_set_irq_enables(UART_ID, false, false);
 
-    uart_puts(UART_ID, "\r\nSystem UP!\r\n");
+    uart_puts(UART_ID, "\r\nSystem UP!\a\r\n");
     sleep_ms(10);
 
     z80bus_pio_init((uint32_t)(CPU_SPEED / 1000.0f));
@@ -400,7 +434,18 @@ int main(void) {
     reset_release();
     system_up = true;
 
+    uint32_t fuzix_last_tick = time_us_32();
     while (true) {
+        // Fuzix clock.  The Z80 is slow (stalled on every bus cycle), and a
+        // full timer interrupt costs tens of ms, so tick slowly (10 Hz) to
+        // leave the kernel useful time between interrupts.
+        if (fuzix_mode) {
+            uint32_t now = time_us_32();
+            if ((uint32_t)(now - fuzix_last_tick) >= 100000u) {
+                fuzix_last_tick = now;
+                fuzix_int_raise(FUZIX_IRQ_TIMER);
+            }
+        }
         if (disabled) {
             z80bus_pio_suspend();
             pio_sm_set_enabled(clock_pio, clock_sm, false);

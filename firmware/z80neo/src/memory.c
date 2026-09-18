@@ -25,6 +25,7 @@
 #include "memory.h"
 #include "i2c_ee.h"
 #include "cpm_disk.h"
+#include "fuzix_disk.h"
 
 // ===========================================================================
 // Globals
@@ -112,6 +113,20 @@ volatile uint16_t UP_ADC      = 0x0FF;
 
 volatile bool DEBUG_ADC = false;
 
+// Console baud rate.  Defaults to BAUD_RATE, overridable from Z80NEO.INI.
+uint32_t UART_BAUD = BAUD_RATE;
+
+// Fuzix support.  `fuzix_mode` is set from Z80NEO.INI, changes the HEX loader
+// to a full-RAM (non-replicating) load and enables the hardware /INT timer.
+volatile bool    fuzix_mode = false;
+volatile uint8_t fuzix_irq_pending = 0;
+
+void fuzix_int_raise(uint8_t bit) {
+    if (!fuzix_mode) return;
+    fuzix_irq_pending |= bit;
+    gpio_put(INT_OUT, 0);       // assert /INT (active low)
+}
+
 // Console (port 0x80) traffic ring: bit7 set = Z80 write, clear = Z80 read.
 volatile uint8_t  diag_con[64];
 volatile uint32_t diag_con_idx = 0;
@@ -192,7 +207,9 @@ void mmu_write(uint16_t addr, uint8_t data) {
     // = WBOOT), so those must stay writable or every warm boot falls back to
     // the loader's cold-boot JP and reprints the signon.  rst_locked protects
     // against errant Z80 code corrupting the restart opcode itself.
-    if (rst_locked && addr == 0 && mmu_page[0] == 0x20) return;
+    // CP/M locks the reset vector after loading.  Fuzix installs its own
+    // trap vector at 0x0000 from program_vectors, so let it through.
+    if (!fuzix_mode && rst_locked && addr == 0 && mmu_page[0] == 0x20) return;
     if (addr >= 0xEB00 && addr <= 0xEE00) {
         diag_bios_wr_addr = addr;
         diag_bios_wr_data = data;
@@ -222,8 +239,21 @@ uint8_t io_read_port(uint8_t port) {
         return ch;
     }
     case 0xD1: return i2c_ee_read();
-    case 0xE0: return cpm_disk_read_port(0xE0);
+    case FUZIX_IRQ_STATUS: {
+        // Fuzix interrupt acknowledge: return the latched source bits and
+        // release /INT.  The Z80 ISR at 0x0038 reads this exactly once.
+        uint8_t v = fuzix_irq_pending;
+        fuzix_irq_pending = 0;
+        gpio_put(INT_OUT, 1);
+        return v;
+    }
+    case 0xE0:
+        if (fuzix_mode) return fuzix_disk_read_port(0xE0);
+        return cpm_disk_read_port(0xE0);
     case 0xE2: return cpm_disk_read_port(0xE2);
+    case 0xE7:
+        if (fuzix_mode) return fuzix_disk_read_port(0xE7);
+        return 0x00;
     case SERIAL_STATUS_1:
         // Drain the HW FIFO first so a byte already received is reflected, then
         // derive the ready bit from the ring itself.  rx_data_available can go
@@ -258,10 +288,16 @@ void io_write_port(uint8_t port, uint8_t data) {
     case 0xF2: mmu_page[2] = data; break;
     case 0xF3: mmu_page[3] = data; break;
     case 0xD1: i2c_ee_write(data); return;
+    case FUZIX_IRQ_STATUS: fuzix_irq_pending = 0; gpio_put(INT_OUT, 1); return;
+    case 0xE0:
+        if (fuzix_mode) { fuzix_disk_write_port(0xE0, data); return; }
+        cpm_disk_write_port(0xE0, data); return;
     case 0xE1: cpm_disk_write_port(0xE1, data); return;
     case 0xE2: cpm_disk_write_port(0xE2, data); return;
-    case 0xE0: cpm_disk_write_port(0xE0, data); return;
     case 0xE3: cpm_disk_write_port(0xE3, data); return;  // drive select
+    case 0xE4: case 0xE5: case 0xE6: case 0xE7:
+        if (fuzix_mode) fuzix_disk_write_port(port, data);
+        return;
     case SERIAL_STATUS_1:
     default: break;
     }
@@ -310,6 +346,7 @@ void uart_rx_poll(void) {
         rx_index = (rx_index + 1) % UART_BUF_SIZE;
         rx_count++;
         rx_data_available = true;
+        if (fuzix_mode) fuzix_int_raise(FUZIX_IRQ_SERIAL);
     }
 }
 
@@ -364,6 +401,127 @@ char *init_and_mount_sd_card(void) {
 // Z80NEO.INI reader
 // ===========================================================================
 
+// Case-insensitive key comparison (both NUL-terminated).
+static bool ini_key_is(const char *k, const char *name) {
+    while (*k && *name) {
+        char a = *k, b = *name;
+        if (a >= 'a' && a <= 'z') a -= 32;
+        if (b >= 'a' && b <= 'z') b -= 32;
+        if (a != b) return false;
+        k++; name++;
+    }
+    return *k == '\0' && *name == '\0';
+}
+
+// Trim leading/trailing spaces, tabs and CR/LF in place; returns the start.
+static char *ini_trim(char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    char *end = s + strlen(s);
+    while (end > s && (end[-1] == ' ' || end[-1] == '\t' ||
+                       end[-1] == '\r' || end[-1] == '\n'))
+        end--;
+    *end = '\0';
+    return s;
+}
+
+// Split a "KEY=VALUE" line (also accepts ':' or whitespace) in place.  Returns
+// the trimmed value, or NULL for blank/comment lines.  Key lands in `key`.
+static const char *ini_split(char *line, char *key, size_t keysz) {
+    char *p = ini_trim(line);
+    if (*p == '\0' || *p == '#' || *p == ';') return NULL;
+    char *e = p;
+    while (*e && *e != '=' && *e != ':' && *e != ' ' && *e != '\t') e++;
+    size_t n = (size_t)(e - p);
+    if (n >= keysz) n = keysz - 1;
+    memcpy(key, p, n); key[n] = '\0';
+    char *v = e;
+    while (*v == ' ' || *v == '\t' || *v == '=' || *v == ':') v++;
+    return ini_trim(v);
+}
+
+// Decode three hex digits into an ADC threshold.
+static bool ini_hex3(const char *v, volatile uint16_t *dst) {
+    if (strlen(v) < 3) return false;
+    int d0 = decode_hex(v[0]), d1 = decode_hex(v[1]), d2 = decode_hex(v[2]);
+    if (d0 < 0 || d1 < 0 || d2 < 0) return false;
+    *dst = (uint16_t)(d0 * 256 + d1 * 16 + d2);
+    return true;
+}
+
+// Apply one named "KEY=VALUE" Z80NEO.INI line.  Unknown keys are ignored so a
+// file written for a newer firmware still boots.
+static void ini_apply_named(char *line) {
+    char key[16];
+    const char *v = ini_split(line, key, sizeof(key));
+    if (v == NULL) return;
+
+    if (ini_key_is(key, "MACHINE")) {
+        snprintf(MACHINE, sizeof(MACHINE), "%s", v);
+        print_line(0, "%s", MACHINE);
+    } else if (ini_key_is(key, "CANCEL2")) {
+        ini_hex3(v, &CANCEL2_ADC);
+        print_line(0, "CANCEL2: %03x", CANCEL2_ADC);
+    } else if (ini_key_is(key, "CANCEL")) {
+        ini_hex3(v, &CANCEL_ADC);
+        print_line(0, "CANCEL : %03x", CANCEL_ADC);
+    } else if (ini_key_is(key, "OK")) {
+        ini_hex3(v, &OK_ADC);
+        print_line(0, "OK     : %03x", OK_ADC);
+    } else if (ini_key_is(key, "BACK")) {
+        ini_hex3(v, &BACK_ADC);
+        print_line(0, "BACK   : %03x", BACK_ADC);
+    } else if (ini_key_is(key, "DOWN")) {
+        ini_hex3(v, &DOWN_ADC);
+        print_line(0, "DOWN   : %03x", DOWN_ADC);
+    } else if (ini_key_is(key, "UP")) {
+        ini_hex3(v, &UP_ADC);
+        print_line(0, "UP     : %03x", UP_ADC);
+    } else if (ini_key_is(key, "PROG1")) {
+        snprintf(BANK_PROG[0], FILE_LENGTH, "%s", v);
+        print_line(0, "P1: %12s", BANK_PROG[0]);
+    } else if (ini_key_is(key, "PROG2")) {
+        snprintf(BANK_PROG[1], FILE_LENGTH, "%s", v);
+        print_line(0, "P2: %12s", BANK_PROG[1]);
+    } else if (ini_key_is(key, "PROG3")) {
+        snprintf(BANK_PROG[2], FILE_LENGTH, "%s", v);
+        print_line(0, "P3: %12s", BANK_PROG[2]);
+    } else if (ini_key_is(key, "PROG4")) {
+        snprintf(BANK_PROG[3], FILE_LENGTH, "%s", v);
+        print_line(0, "P4: %12s", BANK_PROG[3]);
+    } else if (ini_key_is(key, "DEBUG")) {
+        DEBUG_ADC = (v[0] == '1');
+        print_line(0, "ADC DEBUG: %01x", DEBUG_ADC);
+    } else if (ini_key_is(key, "FUZIX")) {
+        fuzix_mode = (v[0] == 'F' || v[0] == 'f' || v[0] == '1');
+        print_line(0, "FUZIX: %01x", fuzix_mode);
+    } else if (ini_key_is(key, "BAUD")) {
+        long b = atol(v);
+        if (b >= 300 && b <= 3000000) UART_BAUD = (uint32_t)b;
+        print_line(0, "BAUD: %lu", (unsigned long)UART_BAUD);
+    } else {
+        return; // unknown key: ignore
+    }
+    sleep_ms(DISPLAY_DELAY_SHORT);
+}
+
+// Parse an optional trailing "BAUD <n>" (or "BAUD:<n>", "BAUD=<n>") line.
+// Case-insensitive.  Returns true and stores the rate only for a sane PL011
+// baud value, so the positional debug/FUZIX lines are never mistaken for it.
+static bool ini_parse_baud(const char *line, uint32_t *baud) {
+    while (*line == ' ' || *line == '\t') line++;
+    if (!((line[0] == 'B' || line[0] == 'b') &&
+          (line[1] == 'A' || line[1] == 'a') &&
+          (line[2] == 'U' || line[2] == 'u') &&
+          (line[3] == 'D' || line[3] == 'd')))
+        return false;
+    const char *p = line + 4;
+    while (*p == ' ' || *p == '\t' || *p == ':' || *p == '=') p++;
+    long v = atol(p);
+    if (v < 300 || v > 3000000) return false;
+    *baud = (uint32_t)v;
+    return true;
+}
+
 int sd_read_init(void) {
     FRESULT fr_local;
     FATFS   fs_local;
@@ -387,49 +545,87 @@ int sd_read_init(void) {
         else uart_puts(UART_ID, "Open ok\r\n");
     }
 
-    while (!skip) {
-        if (!f_gets(MACHINE, sizeof(MACHINE), &fil_local)) { show_error(0, 0, "INI - MACHINE"); skip = true; break; }
-        print_line(0, MACHINE); sleep_ms(DISPLAY_DELAY_SHORT);
-
-        if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - CANCEL2"); skip = true; break; }
-        CANCEL2_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
-        print_line(0, "%CANCEL2: %03x     ", CANCEL2_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
-
-        if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - CANCEL"); skip = true; break; }
-        CANCEL_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
-        print_line(0, "%CANCEL : %03x     ", CANCEL_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
-
-        if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - OK"); skip = true; break; }
-        OK_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
-        print_line(0, "%OK     : %03x     ", OK_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
-
-        if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - BACK"); skip = true; break; }
-        BACK_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
-        print_line(0, "%BACK   : %03x     ", BACK_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
-
-        if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - DOWN"); skip = true; break; }
-        DOWN_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
-        print_line(0, "%DOWN   : %03x     ", DOWN_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
-
-        if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - UP"); skip = true; break; }
-        UP_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
-        print_line(0, "%UP     : %03x     ", UP_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
-
-        if (!f_gets(BANK_PROG[0], sizeof(BANK_PROG[0]), &fil_local)) { show_error(0, 0, "INI - PROG1"); skip = true; break; }
-        print_line(0, "P1: %12s", BANK_PROG[0]); sleep_ms(DISPLAY_DELAY_SHORT);
-        if (!f_gets(BANK_PROG[1], sizeof(BANK_PROG[1]), &fil_local)) { show_error(0, 0, "INI - PROG2"); skip = true; break; }
-        print_line(0, "P2: %12s", BANK_PROG[1]); sleep_ms(DISPLAY_DELAY_SHORT);
-        if (!f_gets(BANK_PROG[2], sizeof(BANK_PROG[2]), &fil_local)) { show_error(0, 0, "INI - PROG3"); skip = true; break; }
-        print_line(0, "P3: %12s", BANK_PROG[2]); sleep_ms(DISPLAY_DELAY_SHORT);
-        if (!f_gets(BANK_PROG[3], sizeof(BANK_PROG[3]), &fil_local)) { show_error(0, 0, "INI - PROG4"); skip = true; break; }
-        print_line(0, "P4: %12s", BANK_PROG[3]); sleep_ms(DISPLAY_DELAY_SHORT);
-        break;
+    // Layout detection: a "KEY=VALUE" (or "KEY:VALUE") first non-comment line
+    // selects the named layout; anything else is the legacy positional layout.
+    bool named = false;
+    if (!skip) {
+        while (f_gets(buf, sizeof(buf), &fil_local)) {
+            char *t = ini_trim(buf);
+            if (*t == '\0' || *t == '#' || *t == ';') continue;
+            named = (strchr(t, '=') != NULL || strchr(t, ':') != NULL);
+            break;
+        }
+        f_lseek(&fil_local, 0);
     }
 
-    if (!skip && f_gets(buf, sizeof(buf), &fil_local)) {
-        DEBUG_ADC = buf[0] == '1';
-        print_line(0, "%ADC DEBUG: %01x    ", DEBUG_ADC);
-        sleep_ms(DISPLAY_DELAY_SHORT); clear_screen();
+    if (!skip && named) {
+        // Named layout: order-independent, unknown keys ignored.
+        while (f_gets(buf, sizeof(buf), &fil_local))
+            ini_apply_named(buf);
+        clear_screen();
+    } else if (!skip) {
+        // Legacy positional layout.
+        while (!skip) {
+            if (!f_gets(MACHINE, sizeof(MACHINE), &fil_local)) { show_error(0, 0, "INI - MACHINE"); skip = true; break; }
+            print_line(0, MACHINE); sleep_ms(DISPLAY_DELAY_SHORT);
+
+            if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - CANCEL2"); skip = true; break; }
+            CANCEL2_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
+            print_line(0, "%CANCEL2: %03x     ", CANCEL2_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
+
+            if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - CANCEL"); skip = true; break; }
+            CANCEL_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
+            print_line(0, "%CANCEL : %03x     ", CANCEL_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
+
+            if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - OK"); skip = true; break; }
+            OK_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
+            print_line(0, "%OK     : %03x     ", OK_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
+
+            if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - BACK"); skip = true; break; }
+            BACK_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
+            print_line(0, "%BACK   : %03x     ", BACK_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
+
+            if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - DOWN"); skip = true; break; }
+            DOWN_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
+            print_line(0, "%DOWN   : %03x     ", DOWN_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
+
+            if (!f_gets(buf, sizeof(buf), &fil_local)) { show_error(0, 0, "INI - UP"); skip = true; break; }
+            UP_ADC = decode_hex(buf[0]) * 16 * 16 + decode_hex(buf[1]) * 16 + decode_hex(buf[2]);
+            print_line(0, "%UP     : %03x     ", UP_ADC); sleep_ms(DISPLAY_DELAY_SHORT);
+
+            if (!f_gets(BANK_PROG[0], sizeof(BANK_PROG[0]), &fil_local)) { show_error(0, 0, "INI - PROG1"); skip = true; break; }
+            print_line(0, "P1: %12s", BANK_PROG[0]); sleep_ms(DISPLAY_DELAY_SHORT);
+            if (!f_gets(BANK_PROG[1], sizeof(BANK_PROG[1]), &fil_local)) { show_error(0, 0, "INI - PROG2"); skip = true; break; }
+            print_line(0, "P2: %12s", BANK_PROG[1]); sleep_ms(DISPLAY_DELAY_SHORT);
+            if (!f_gets(BANK_PROG[2], sizeof(BANK_PROG[2]), &fil_local)) { show_error(0, 0, "INI - PROG3"); skip = true; break; }
+            print_line(0, "P3: %12s", BANK_PROG[2]); sleep_ms(DISPLAY_DELAY_SHORT);
+            if (!f_gets(BANK_PROG[3], sizeof(BANK_PROG[3]), &fil_local)) { show_error(0, 0, "INI - PROG4"); skip = true; break; }
+            print_line(0, "P4: %12s", BANK_PROG[3]); sleep_ms(DISPLAY_DELAY_SHORT);
+            break;
+        }
+
+        // Legacy optional trailing lines.  A "BAUD <n>" line may appear in any
+        // position among them; the remaining lines keep their positional
+        // meaning: first = ADC debug flag ("1" = on), second = FUZIX mode.
+        int opt = 0;
+        for (int n = 0; n < 3 && !skip && f_gets(buf, sizeof(buf), &fil_local); n++) {
+            uint32_t baud;
+            if (ini_parse_baud(buf, &baud)) {
+                UART_BAUD = baud;
+                print_line(0, "%BAUD: %lu    ", (unsigned long)UART_BAUD);
+                sleep_ms(DISPLAY_DELAY_SHORT); clear_screen();
+                continue;
+            }
+            if (opt == 0) {
+                DEBUG_ADC = buf[0] == '1';
+                print_line(0, "%ADC DEBUG: %01x    ", DEBUG_ADC);
+            } else {
+                fuzix_mode = (buf[0] == 'F' || buf[0] == 'f' || buf[0] == '1');
+                print_line(0, "%FUZIX: %01x    ", fuzix_mode);
+            }
+            opt++;
+            sleep_ms(DISPLAY_DELAY_SHORT); clear_screen();
+        }
     }
     fr_local = f_close(&fil_local);
     if (fr_local != FR_OK) { show_error(0, 0, "INI - CLOSE"); while (true); }
@@ -441,6 +637,22 @@ int sd_read_init(void) {
 // Intel HEX loader (same as before, with bank offset masking)
 // ===========================================================================
 
+// Case-insensitive "does name end with ext" (ext includes the dot).
+static bool ext_is(const char *name, const char *ext) {
+    size_t n = strlen(name), e = strlen(ext);
+    if (n < e) return false;
+    for (size_t i = 0; i < e; i++) {
+        char a = name[n - e + i];
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (a != ext[i]) return false;
+    }
+    return true;
+}
+
+bool is_prog_file(const char *name) {
+    return ext_is(name, ".hex") || ext_is(name, ".ihx");
+}
+
 void load_file(bool quiet) {
     reset_hold();
     FRESULT fr_local;
@@ -450,8 +662,13 @@ void load_file(bool quiet) {
     char const *p_dir;
 
     clear_bank(cur_bank);
+    // Fuzix occupies all four kernel pages; wipe them so linker gaps do not
+    // retain stale CP/M data.
+    if (fuzix_mode) {
+        for (uint8_t b = 0; b < 4; b++) clear_bank(b);
+    }
 
-    if (!quiet) { clear_screen(); print_string(0, 0, "Loading HEX"); print_string(0, 1, file); sleep_ms(DISPLAY_DELAY_SHORT); }
+    if (!quiet) { clear_screen(); print_string(0, 0, "Loading HEX/IHX"); print_string(0, 1, file); sleep_ms(DISPLAY_DELAY_SHORT); }
 
     p_dir = init_and_mount_sd_card();
     fr_local = f_open(&fil_local, file, FA_READ);
@@ -514,8 +731,8 @@ void load_file(bool quiet) {
                               uint8_t val = data_buffer[j];
                               uint32_t abs_addr = intel_absolute_address + j;
                               if (abs_addr == 0xEBEE) { diag_hex_ebee = val; diag_hex_ebee_count++; }
-                              if (abs_addr < 0x4000) {
-                                  // Bootloader code: replicate to ALL banks
+                              if (abs_addr < 0x4000 && !fuzix_mode) {
+                                  // CP/M bootloader code: replicate to ALL banks
                                   for (int bk = 0; bk < MAX_BANKS; bk++)
                                       ram[bk][bank_offset + j] = val;
                               } else {
@@ -546,6 +763,14 @@ void load_file(bool quiet) {
     if (DEBUG_LOAD) { sprintf(text_buffer, "Loaded %lu bytes", bytes_loaded); uart_puts(UART_ID, text_buffer); uart_puts(UART_ID, "\r\n"); print_string(0, 6, text_buffer); sleep_ms(DISPLAY_DELAY_LONG); }
     if (!quiet) { clear_screen(); sprintf(text_buffer, "Loaded: %lu bytes", bytes_loaded); print_string(0, 0, text_buffer); print_string(0, 1, file); sleep_ms(DISPLAY_DELAY); }
     strcpy(BANK_PROG[cur_bank], file);
+    if (fuzix_mode) {
+        // Fuzix links its crt0 at 0x0100; the Z80 reset vector is 0x0000, so
+        // plant a jump there.  program_vectors() overwrites it later with the
+        // NULL trap.
+        ram[0][0] = 0xC3;   // JP
+        ram[0][1] = 0x00;   // 0x0100
+        ram[0][2] = 0x01;
+    }
     reset_release();
 }
 

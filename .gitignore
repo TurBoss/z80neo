@@ -4,6 +4,10 @@ firmware/.project
 firmware/.clang-format
 firmware/build/
 firmware/z80neo/build/
+software/z80neo/build/
+VDP/build/
+hardware/gerber/
+hardware/main-backups
 .project
 .clang-format
 .clangd
@@ -12,8 +16,8 @@ firmware/z80neo/build/
 *.bin
 *.o
 .pydevproject
-hardware/gerber/
-hardware/main-backups
 .settings/
 .vscode/
 .metadata/
+vdp/build2350/
+vdp/build/

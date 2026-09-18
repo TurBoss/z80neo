@@ -154,18 +154,25 @@ disk_sectrn:
 ; Directory entries = 64 (max), allocation blocks = 243
 ;──────────────────────────────────────────────────────────────────────────
 
-; DPB for drive A.  Must match diskdefs (tracks 254, 26 sects/track, 1K blocks,
+; DPB for drive A.  Must match diskdefs (tracks 254, 26 sects/track, 2K blocks,
 ; maxdir 128, boottrk 2) or the BDOS block/directory mapping disagrees with the
-; image and reads the wrong sectors.  Data area = (254-2)*26*128/1024 = 819
-; blocks; directory = 128 entries = 4 blocks.
+; image and reads the wrong sectors.  Data area = (254-2)*26*128/2048 = 409
+; blocks; directory = 128 entries = 2 blocks (4 KB).
+;
+; 2K blocks are required here: with DSM > 255 CP/M uses 16-bit block numbers, so
+; a directory entry holds 8 blocks.  At 1K blocks that is only 64 records, while
+; the BDOS's GETBLOCK computes extent*16 + record/8 (16 blocks/extent) and would
+; read records 64-127 past the entry.  At 2K blocks each entry is exactly one
+; 16K extent (128 records) and everything lines up.  (cpmtools also mishandles
+; the 1K/DSM>255 combination, dropping the first 8K of files on write.)
 dpb_table:
     DEFW    SECS_PER_TRACK       ; SPT — sectors per track (26)
-    DEFB    3                    ; BSH — block shift factor (1K blocks)
-    DEFB    7                    ; BLM — block mask (1K→0x07)
+    DEFB    4                    ; BSH — block shift factor (2K blocks)
+    DEFB    15                   ; BLM — block mask (2K→0x0F)
     DEFB    0                    ; EXM — extent mask
-    DEFW    818                  ; DSM — total data blocks - 1 (819 × 1K blocks)
+    DEFW    408                  ; DSM — total data blocks - 1 (409 × 2K blocks)
     DEFW    127                  ; DRM — directory entries - 1 (128 entries)
-    DEFB    0F0H                 ; AL0 — dir blocks 0-3 allocated (4 blocks = 32 sectors)
+    DEFB    0C0H                 ; AL0 — dir blocks 0-1 allocated (2 blocks = 4 KB)
     DEFB    0                    ; AL1
     DEFW    32                   ; CKS — directory check size (DRM+1)/4 = 128/4
     DEFW    2                    ; OFF — track offset (2 reserved tracks)

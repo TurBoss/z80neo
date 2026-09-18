@@ -25,6 +25,22 @@
 ; it too.  The ARM examines the captured control bits (via the live pins) and
 ; skips M1 cycles in handle_iorq - the mem SM services the fetch exactly once.
 
+;
+; Refresh race: a Z80 refresh cycle (MREQ LOW, no RD/WR, T3-T4 of every M1)
+; also triggers the mem SM, but the Z80 does NOT sample WAIT during refresh,
+; so it keeps running.  Only ONE T-state (7.8 us at 128 kHz) separates the
+; refresh's MREQ rising edge from the next M1's MREQ falling edge.  If the
+; ARM's acknowledge for the refresh lands after the next M1 has already
+; pulled MREQ LOW, the old "poll for MREQ HIGH before re-arming" logic took
+; that new cycle for the tail of the refresh and sat it out: the opcode fetch
+; ran with no WAIT and no data driven, the Z80 executed a floating-bus byte
+; and the Fuzix kernel got randomly corrupted (e.g. a lost POP HL turned into
+; a write into kernel code).  The ARM now passes bit0 in the acknowledge:
+;   1 = serviced cycle: the Z80 was stalled, so it is safe to wait for the
+;       cycle to really end (MREQ HIGH) before re-arming.
+;   0 = refresh (nothing serviced): re-arm immediately so a new cycle that
+;       has already started is caught and WAIT is asserted before T2.
+;
 .program z80bus_pio_mem
     SET PINDIRS, 0          ; release WAIT (high-Z, pull-up holds it HIGH)
 idle:
@@ -34,6 +50,8 @@ idle:
     IN PINS, 32             ; capture data bus + control flags (autopush)
     PULL BLOCK              ; wait for ARM acknowledge
     SET PINDIRS, 0          ; release WAIT (high-Z)
+    OUT X, 1                ; ack bit0: 1 = wait for cycle end, 0 = re-arm now
+    JMP !X idle             ; refresh: back to idle right away
 wait_high:
     JMP PIN idle            ; MREQ HIGH again? cycle really over -> idle
     JMP wait_high           ; still low, keep waiting

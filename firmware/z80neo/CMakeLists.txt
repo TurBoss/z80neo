@@ -9,6 +9,7 @@ add_executable(z80neo
  src/memory.c
  src/i2c_ee.c
  src/cpm_disk.c
+ src/fuzix_disk.c
  src/hardfault.c
  src/z80bus_pio.c
  src/main.c
