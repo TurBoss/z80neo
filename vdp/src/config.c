@@ -40,7 +40,17 @@
 #include "tusb.h"
 
 #define CONFIG_MAGIC   0x0F1E2D3C
-#define CONFIG_VERSION 0
+// Bumped when a default changes so a stale flash config is rejected once and
+// rewritten.  v1: USB role defaults to Host (not upstream Auto-detect).
+// v2: display type defaults to VGA (not Auto-detect, which misreads a floating
+// HDMI-detect pin on this board as DVI).
+// v3 (PS2_KEYBOARD builds only): USB role defaults to CDC device, since the
+// keyboard is PS/2 and the USB host controller is never started.
+#ifdef PS2_KEYBOARD
+#define CONFIG_VERSION 3
+#else
+#define CONFIG_VERSION 2
+#endif
 
 // defined in main.c
 void run_tasks(bool processInput);
@@ -456,7 +466,7 @@ static const struct MenuItemStruct __in_flash(".configmenus") screenPetsciiColor
 
 
 static const struct MenuItemStruct __in_flash(".configmenus") screenMenu[] =
-    {{'1', "Display type",               0, NULL, 0, displaytype_fn, &settings.Screen.display,  0,   2, 1,  0, {"Auto-detect", "DVI/HDMI", "VGA"}},
+    {{'1', "Display type",               0, NULL, 0, displaytype_fn, &settings.Screen.display,  0,   2, 1,  2, {"Auto-detect", "DVI/HDMI", "VGA"}},
      {'2', "Rows",                       0, NULL, 0, NULL, &settings.Screen.rows,    10,  60, 1, 30},
      {'3', "Columns",                    0, NULL, 0, NULL, &settings.Screen.cols,    20,  80, 2, 80},
      {'4', "Double size characters",     0, NULL, 0, NULL, &settings.Screen.dblchars, 0,   1, 1,  1, {"never", "if screen space allows"}},
@@ -486,7 +496,7 @@ static const struct MenuItemStruct __in_flash(".configmenus") fontMenu[] =
 
 
 static const struct MenuItemStruct __in_flash(".configmenus") usbMenu[] =
-    {{'1', "USB port mode",  0, NULL, 0, usbtype_fn, &settings.USB.mode,   0, 3, 1, 3, {"Disabled", "Device", "Host", "Auto-detect"}},
+    {{'1', "USB port mode",  0, NULL, 0, usbtype_fn, &settings.USB.mode,   0, 3, 1, CFG_USBMODE_DEFAULT, {"Disabled", "Device", "Host", "Auto-detect"}},
      {'2', "USB CDC device mode", 0, NULL, 0, NULL, &settings.USB.cdcmode, 0, 3, 1, 2, {"Disabled", "Serial", "Pass-through", "Pass-through (terminal disabled)"}}};
 
 
@@ -506,6 +516,11 @@ static const struct MenuItemStruct __in_flash(".configmenus") mainMenu[] =
 
 static uint16_t get_current_usbmode()
 {
+#ifdef PS2_KEYBOARD
+  // The USB host controller is never started with a PS/2 keyboard: the native
+  // port can only be off or a CDC device, whatever the stored menu value says.
+  return settings.USB.mode==CFG_USBMODE_OFF ? CFG_USBMODE_OFF : CFG_USBMODE_DEVICE;
+#else
   if( settings.USB.mode==CFG_USBMODE_AUTODETECT )
     {
       if( tuh_inited() )
@@ -517,6 +532,7 @@ static uint16_t get_current_usbmode()
     }
   else
     return settings.USB.mode;
+#endif
 }
 
 

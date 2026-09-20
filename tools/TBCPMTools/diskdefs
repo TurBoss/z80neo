@@ -1,0 +1,24 @@
+# MITS Altair original, extra (MITS2) 88-DISK(extended)-----
+# sector = header + data + trailer = 3 + 128 + 6 = 137
+# This definition is valid only on CpmtoolsGUI Ver.1.02 or later.
+diskdef MITS2
+  seclen 137
+  tracks 254
+  sectrk 32
+  blocksize 2048
+  maxdir 256
+  skew 17
+  boottrk 6
+  os 2.2
+end
+
+diskdef z80neo
+  seclen 128
+  tracks 254
+  sectrk 26
+  blocksize 2048
+  maxdir 128
+  skew 0
+  boottrk 2
+  os 2.2
+end

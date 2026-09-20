@@ -32,6 +32,14 @@
 #define CFG_USBMODE_HOST        2
 #define CFG_USBMODE_AUTODETECT  3
 
+// USB host is unavailable with a PS/2 keyboard, so the native port defaults to
+// CDC device instead of the upstream/z80neo Host default.
+#ifdef PS2_KEYBOARD
+#define CFG_USBMODE_DEFAULT     CFG_USBMODE_DEVICE
+#else
+#define CFG_USBMODE_DEFAULT     CFG_USBMODE_HOST
+#endif
+
 #define CFG_TTYPE_VT102   0
 #define CFG_TTYPE_VT52    1
 #define CFG_TTYPE_PETSCII 2

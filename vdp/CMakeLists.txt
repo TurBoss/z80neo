@@ -32,4 +32,16 @@ add_subdirectory(lib/PicoVGA)
 #   OFF (default): the Pico's own USB port (native controller, OTG adapter)
 #   ON           : the GPIO-wired port via Pico-PIO-USB (pins in src/pins.h)
 option(USB_HOST_PIO "Keyboard host on GPIO pins via Pico-PIO-USB" OFF)
+
+# PS2_KEYBOARD: use a PS/2 keyboard wired to GP10/GP11 (src/pins.h) and never
+# start the USB host controller. The native USB port stays an optionally
+# usable CDC device; only the USB keyboard host is disabled. This is the
+# default for the z80neo VoidVDP board.
+option(PS2_KEYBOARD "PS/2 keyboard on GP10/GP11; USB keyboard host disabled" ON)
+
+if(USB_HOST_PIO AND PS2_KEYBOARD)
+    message(FATAL_ERROR
+        "USB_HOST_PIO and PS2_KEYBOARD both use GP10/GP11; enable only one.")
+endif()
+
 add_subdirectory(src)

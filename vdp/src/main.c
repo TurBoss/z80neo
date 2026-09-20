@@ -172,7 +172,9 @@ int main()
   // initialize USB (needed for keyboard)
   {
     const tusb_rhport_init_t dev_init = { .role = TUSB_ROLE_DEVICE, .speed = TUSB_SPEED_FULL };
+#ifndef PS2_KEYBOARD
     const tusb_rhport_init_t host_init = { .role = TUSB_ROLE_HOST, .speed = TUSB_SPEED_FULL };
+#endif
 
 #ifdef USB_HOST_PIO
     // Keyboard host is on the GPIO-wired port: PIO-USB on rhport 1 (the display
@@ -189,6 +191,12 @@ int main()
       tuh_configure(1, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &pio_cfg);
       tusb_rhport_init(1, &host_init);
     }
+#elif defined(PS2_KEYBOARD)
+    // PS/2 keyboard on GP10/GP11: never start the USB host controller.  The
+    // native USB port is only ever a CDC device, so a PC can still use it as a
+    // serial console.
+    if( config_get_usb_mode()!=CFG_USBMODE_OFF )
+      tusb_rhport_init(0, &dev_init);
 #else
     // Keyboard host is the Pico's own USB port (OTG adapter).
     if( config_get_usb_mode()==1 )

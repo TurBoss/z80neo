@@ -41,10 +41,23 @@ The builds use the **system** pico-sdk, not a bundled submodule:
     the build uses `-march=armv8-m.main+fp`.
   * `PICO_STACK_SIZE=0xC00` — the 2 K default is marginal for tinyusb + PicoVGA.
 
-## USB keyboard
-* Default: keyboard on the **native** USB port (OTG adapter), like upstream.
-* `-DUSB_HOST_PIO=ON`: keyboard on the **GPIO-wired** port via Pico-PIO-USB
-  (pins in `src/pins.h`); uses the SDK's `tinyusb_pico_pio_usb`.
+## Keyboard
+* Default: **PS/2 keyboard** on **GP10 = DATA**, **GP11 = CLOCK**
+  (`PS2_KEYBOARD=ON` in `CMakeLists.txt`/`src/pins.h`). The USB host controller
+  is **never started** — only the USB keyboard host is disabled, so the native
+  USB port stays available as a CDC device (default `USB port mode` becomes
+  **Device**; bumping `CONFIG_VERSION` makes a stale flash config rewrite once).
+* `-DPS2_KEYBOARD=OFF` restores the USB keyboard: the **native** USB port
+  (OTG adapter), whose role default is then **Host** (`USB port mode` in the
+  settings menu; upstream defaults to Auto-detect). Auto-detect samples GPIO24,
+  which on a Pico 2 is `PICO_VBUS_PIN`: an OTG adapter that puts VBUS on the
+  connector makes it read "device", so the keyboard is never hosted. Use this
+  only if you want the Pico to appear as a CDC device to a PC.
+* `-DUSB_HOST_PIO=ON`: USB keyboard on the **GPIO-wired** port via
+  Pico-PIO-USB. It shares GP10/GP11 with PS/2, so it and `PS2_KEYBOARD` are
+  mutually exclusive (the build errors if both are on).
+* The Pico does not source VBUS out, so a bus-powered USB keyboard still needs
+  5 V on the adapter's VBUS.
 
 ## Console
 Serial console is **UART1 on GP20 (TX) / GP21 (RX)**, default 9600 8N1

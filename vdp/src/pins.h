@@ -6,17 +6,19 @@
 
 #define PIN_BUZZER       9
 
-// USB keyboard host source, selected at build time:
-//   default        : the Pico's own USB port (native controller, OTG adapter)
-//   -DUSB_HOST_PIO : the GPIO-wired port via Pico-PIO-USB (pins below)
-// PIO-USB needs D+ and D- on adjacent GPIOs; set the pair here.
+// Keyboard source, selected at build time:
+//   default         : PS/2 keyboard on the two pins below (USB host disabled)
+//   -DUSB_HOST_PIO  : the GPIO-wired USB port via Pico-PIO-USB (pins below)
+// PIO-USB needs D+ and D- on adjacent GPIOs; it shares GP10/GP11 with PS/2, so
+// PS2_KEYBOARD and USB_HOST_PIO are mutually exclusive.
 #ifdef USB_HOST_PIO
 #define USB_HOST_DP_PIN 11
 #define USB_HOST_DM_PIN 10
 #endif
 
-#define PIN_PS2_CLOCK   10
-#define PIN_PS2_DATA    11
+// PS/2 keyboard (DATA=GP10, CLOCK=GP11) when PS2_KEYBOARD is set.
+#define PIN_PS2_DATA    10
+#define PIN_PS2_CLOCK   11
 #define PIN_DEFAULTS    22
 #define PIN_LED         25
 #define PIN_HDMI_DETECT 28

@@ -1,54 +1,51 @@
-;-- UART. Ejemplo 03: Prueba de envio de una cadena al PC por el puerto serie
-
-
-
 ;---- PUERTOS
-LEDS:  equ 0x10
 
-SERIAL_DATA: equ 0x80
-
-SERIAL_STATUS: equ 0x11
+SERIAL_DATA:   equ 0x80
+SERIAL_STATUS: equ 0x81
 
 
 
 ;--- Comienzo del programa
-  org 0x0000
+  ORG 0x0000
 
 
 main:
 
   ;-- Configurar la pila
-  ld sp, topOfStack
+  LD SP, topOfStack
+
+main_loop:
 
   ;-- HL apunta a la cadena a enviar
-  ld HL, MSG
+  LD HL, MSG
 
+;  jp main_loop
 
 loop:
 
   ;-- Leer registro de estaus de la UART
   ;-- ¿Se puede enviar?
-;  in A, (SERIAL_STATUS)
-;  and 0x01
-;  jp nz, loop ;-- No--> Esperar
+;  IN A, (SERIAL_STATUS)
+;  AND 0x02
+;  JR NZ, loop ;-- No--> Esperar
 
   ;-- Listo para transmitir
-
+  INC HL
   ;-- Leer el primer caracter
-  ld A, (HL)
+  LD A, (HL)
 
   ;-- Es el ultimo caracter?
-  cp 0
-  jr z,fin  ;-- Si--> Terminar
+  CP 0
+  JR NZ, fin  ;-- Si--> Terminar
 
   ;--- No. Enviar caracter
-  out (SERIAL_DATA), A
+  OUT (SERIAL_DATA), A
 
   ;-- Apuntar al siguiente caracter
-  inc HL
+
 
   ;-- Repetir
-  jr loop
+  JP loop
 
 
 fin:
@@ -56,10 +53,7 @@ fin:
 
 
 ;--- Cadena a enviar. Deber terminar en 0
-MSG: DB "Hello World from z80neo !!!\r\n", 0
+MSG: DB "Hellord !!!\r\n", 0
 
 
-
-
-  ;org 0x3fff
 topOfStack:

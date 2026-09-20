@@ -21,3 +21,4 @@ hardware/main-backups
 .metadata/
 vdp/build2350/
 vdp/build/
+sdl_client/build/

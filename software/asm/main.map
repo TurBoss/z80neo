@@ -1,0 +1,15 @@
+LOOP                            = $0003 ; addr, local, , main, CODE, main.s:23
+MAIN                            = $0000 ; addr, local, , main, CODE, main.s:13
+PRINT_CHAR                      = $0016 ; addr, local, , main, CODE, main.s:57
+READ_CHAR                       = $000D ; addr, local, , main, CODE, main.s:40
+SERIAL_DATA                     = $0080 ; const, local, , main, , main.s:3
+SERIAL_STATUS                   = $0081 ; const, local, , main, , main.s:4
+__CODE_head                     = $0000 ; const, public, def, , ,
+__CODE_size                     = $0121 ; const, public, def, , ,
+__CODE_tail                     = $0121 ; const, public, def, , ,
+__head                          = $0000 ; const, public, def, , ,
+__size                          = $0121 ; const, public, def, , ,
+__tail                          = $0121 ; const, public, def, , ,
+ready_tx                        = $0017 ; addr, local, , main, CODE, main.s:60
+stack_memory                    = $0021 ; addr, local, , main, CODE, main.s:80
+topOfStack                      = $0121 ; addr, local, , main, CODE, main.s:83

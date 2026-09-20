@@ -1,0 +1,116 @@
+main.s:
+     1                          
+     2                          ;---- PUERTOS
+     3                          SERIAL_DATA:    EQU 80h
+     4                          SERIAL_STATUS:  EQU 81h
+     5                          
+     6                          SECTION CODE
+     7                          
+     8                          ;--- Comienzo del programa
+     9                          ORG 0x0000
+    10                          
+    11                          
+    12                          
+    13                          MAIN:
+    14                          
+    15                              ;-- Configurar la pila
+    16                              ; LD SP, 0x7fff
+    17  0000  312101                LD SP, topOfStack    ; Point SP to the TOP of our stack area
+    18                          
+    19                          
+    20                          
+    21                              ;-- Bucle principal
+    22                          
+    23                          LOOP:
+    24                          
+    25                          
+    26  0003  cd0d00                CALL READ_CHAR
+    27                          
+    28  0006  cd1600                CALL PRINT_CHAR
+    29                          
+    30  0009  c30300                JP LOOP
+    31                          
+    32  000c  76                    HALT                 ; Just in case
+    33                          
+    34                          ;-------------------------------------
+    35                          ;-- Subrutina para recibir un caracter
+    36                          ;-- Se queda esperando hasta que llega
+    37                          ;-- SALIDAS:
+    38                          ;--   A: Contiene el carater recibido
+    39                          ;--------------------------------------
+    40                          READ_CHAR:
+    41                              ;-- Esperar hasta que llegue un caracter
+    42  000d  db81                  IN A, (SERIAL_STATUS)
+    43                          
+    44  000f  e602                  AND 0x02
+    45  0011  28fa                  JR Z, READ_CHAR      ; Z=1 means bit is 0 -> no data, keep waiting
+    46                              ;-- Si llegamos aquí, hay datos disponibles (bit 2 = 1)
+    47                          
+    48                              ;-- Leer el caracter que ha llegado
+    49  0013  db80                  IN A, (SERIAL_DATA)
+    50  0015  c9                    RET
+    51                          
+    52                          ;-----------------------------------------------------------
+    53                          ;-- Subrutina para enviar un caracter por el puerto serie
+    54                          ;-- ENTRADAS:
+    55                          ;--   A: Contiene el caracter a enviar
+    56                          ;-----------------------------------------------------------
+    57                          PRINT_CHAR:
+    58  0016  f5                    PUSH AF              ; Save the character
+    59                          
+    60                          ready_tx:
+    61                              ;-- Leer registro de estaus de la UART
+    62  0017  db81                  IN A, (SERIAL_STATUS)
+    63  0019  e601                  AND 0x01             ; Check if transmitter is ready (bit 0 = 1)
+    64  001b  28fa                  JR Z, ready_tx       ; If Z=1, bit is 0 -> not ready, keep waiting
+    65                          
+    66                              ;-- Recuperar de la pila el caracter a enviar
+    67  001d  f1                    POP AF
+    68                          
+    69                              ;-- Enviar caracter
+    70  001e  d380                  OUT (SERIAL_DATA), A
+    71  0020  c9                    RET
+    72                          
+    73                          ; =======================================================
+    74                          ; DATA SECTION - Reserve memory for stack and variables
+    75                          ; =======================================================
+    76                          
+    77                          ;SECTION DATA
+    78                          ;ORG 0x7E00
+    79                          
+    80                          stack_memory:
+    81  0021  0000000000000000      defs 256, 0          ; Reserve 256 bytes for stack, initialized to 0
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+              0000000000000000  
+    82                          
+    83                          topOfStack:              ; This label points to the TOP of the stack
+    84                          

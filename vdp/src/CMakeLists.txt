@@ -8,9 +8,10 @@ add_executable(VoidVDP
         keyboard.c
         keyboard_usb.c
         keyboard_ps2.c
-        config.c
-        xmodem.c
-        flash.c
+	config.c
+	xmodem.c
+	flash.c
+	hardfault.c
         serial.c
         serial_uart.c
         serial_cdc.c
@@ -27,6 +28,12 @@ target_compile_definitions(VoidVDP PRIVATE
 target_include_directories(VoidVDP PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
         )
+
+# PS2_KEYBOARD selects the PS/2 keyboard on GP10/GP11 (src/pins.h); the USB
+# host controller is never started (the native port stays a CDC device).
+if(PS2_KEYBOARD)
+	target_compile_definitions(VoidVDP PRIVATE PS2_KEYBOARD=1)
+endif()
 
 # With USB_HOST_PIO the keyboard host is on PIO-USB (rhport 1).  The SDK's
 # tinyusb host base only builds the native rp2040 HCD, which is empty when
