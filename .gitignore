@@ -5,6 +5,8 @@ firmware/.clang-format
 firmware/build/
 firmware/z80neo/build/
 software/z80neo/build/
+software/z80neo/demos/build/
+software/z80neo/uart1term/build/
 VDP/build/
 hardware/gerber/
 hardware/main-backups
@@ -22,3 +24,6 @@ hardware/main-backups
 vdp/build2350/
 vdp/build/
 sdl_client/build/
+*.pyc
+software/OLD/
+firmware/debug/

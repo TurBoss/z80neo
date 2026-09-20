@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../../common/z80neo_protocol.h"
+
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
@@ -46,9 +48,7 @@ struct Terminal {
 	int nparams;
 	uint8_t params[16];
 
-	uint8_t gfx_buf[TERM_GFX_STRIDE * TERM_GFX_HEIGHT];
-	uint8_t gfx_cell_fg[TERM_GFX_STRIDE * TERM_GFX_ROWS];
-	uint8_t gfx_cell_bg[TERM_GFX_STRIDE * TERM_GFX_ROWS];
+	uint8_t gfx_buf[TERM_GFX_WIDTH * TERM_GFX_HEIGHT];
 	bool gfx_active;
 	uint8_t gfx_fg, gfx_bg;
 	uint8_t gfx_cmd;
@@ -276,35 +276,13 @@ static void reset_terminal(Terminal *t) {
 	t->gfx_cmd = 0;
 	t->gfx_need = -1;
 	t->gfx_index = 0;
-	memset(t->gfx_buf, 0, sizeof(t->gfx_buf));
-	for (size_t i = 0; i < sizeof(t->gfx_cell_fg); i++) {
-		t->gfx_cell_fg[i] = t->gfx_fg;
-		t->gfx_cell_bg[i] = t->gfx_bg;
-	}
+	memset(t->gfx_buf, t->gfx_bg, sizeof(t->gfx_buf));
 }
 
-/* ---- VoidVDP bitmap layer -------------------------------------------- */
-
-static void gfx_set_cell_color(Terminal *t, int x, int y) {
-	int col = x >> 3;
-	int row = y / TERM_GFX_CELL_H;
-	if (col < 0 || col >= TERM_GFX_STRIDE || row < 0 || row >= TERM_GFX_ROWS)
-		return;
-	size_t idx = (size_t)row * TERM_GFX_STRIDE + col;
-	t->gfx_cell_fg[idx] = t->gfx_fg;
-	t->gfx_cell_bg[idx] = t->gfx_bg;
-}
-
-static void gfx_fill_cells(Terminal *t) {
-	for (size_t i = 0; i < sizeof(t->gfx_cell_fg); i++) {
-		t->gfx_cell_fg[i] = t->gfx_fg;
-		t->gfx_cell_bg[i] = t->gfx_bg;
-	}
-}
+/* ---- VoidVDP bitmap layer: one palette index per pixel ---------------- */
 
 static void gfx_clear(Terminal *t) {
-	memset(t->gfx_buf, 0, sizeof(t->gfx_buf));
-	gfx_fill_cells(t);
+	memset(t->gfx_buf, t->gfx_bg, sizeof(t->gfx_buf));
 }
 
 static void gfx_enable(Terminal *t, bool on) {
@@ -319,13 +297,13 @@ static void gfx_enable(Terminal *t, bool on) {
 static void gfx_pixel(Terminal *t, int x, int y, bool on) {
 	if (x < 0 || x >= TERM_GFX_WIDTH || y < 0 || y >= TERM_GFX_HEIGHT)
 		return;
-	uint8_t *p = &t->gfx_buf[y * TERM_GFX_STRIDE + (x >> 3)];
-	uint8_t m = (uint8_t)(1 << (x & 7));
-	if (on)
-		*p |= m;
-	else
-		*p &= (uint8_t)~m;
-	gfx_set_cell_color(t, x, y);
+	t->gfx_buf[y * TERM_GFX_WIDTH + x] = on ? t->gfx_fg : t->gfx_bg;
+}
+
+static void gfx_set_pixel(Terminal *t, int x, int y, uint8_t color) {
+	if (x < 0 || x >= TERM_GFX_WIDTH || y < 0 || y >= TERM_GFX_HEIGHT)
+		return;
+	t->gfx_buf[y * TERM_GFX_WIDTH + x] = color & 15;
 }
 
 static void gfx_line(Terminal *t, int x0, int y0, int x1, int y1, bool on) {
@@ -359,34 +337,39 @@ static void gfx_fill(Terminal *t, int x, int y, int w, int h, bool on) {
 
 static void gfx_exec(Terminal *t) {
 	switch (t->gfx_cmd) {
-	case 0x01:
+	case Z80NEO_GFX_MODE:
 		gfx_enable(t, t->gfx_params[0] != 0);
 		break;
-	case 0x02:
+	case Z80NEO_GFX_CLEAR:
 		gfx_clear(t);
 		break;
-	case 0x03:
+	case Z80NEO_GFX_COLOR:
 		t->gfx_fg = t->gfx_params[0] & 15;
 		t->gfx_bg = t->gfx_params[1] & 15;
 		break;
-	case 0x04:
+	case Z80NEO_GFX_PIXEL:
 		gfx_pixel(t, t->gfx_params[0] | (t->gfx_params[1] << 8),
 				  t->gfx_params[2] | (t->gfx_params[3] << 8),
 				  t->gfx_params[4] != 0);
 		break;
-	case 0x05:
+	case Z80NEO_GFX_LINE:
 		gfx_line(t, t->gfx_params[0] | (t->gfx_params[1] << 8),
 				 t->gfx_params[2] | (t->gfx_params[3] << 8),
 				 t->gfx_params[4] | (t->gfx_params[5] << 8),
 				 t->gfx_params[6] | (t->gfx_params[7] << 8),
 				 t->gfx_params[8] != 0);
 		break;
-	case 0x06:
+	case Z80NEO_GFX_FILL:
 		gfx_fill(t, t->gfx_params[0] | (t->gfx_params[1] << 8),
 				 t->gfx_params[2] | (t->gfx_params[3] << 8),
 				 t->gfx_params[4] | (t->gfx_params[5] << 8),
 				 t->gfx_params[6] | (t->gfx_params[7] << 8),
 				 t->gfx_params[8] != 0);
+		break;
+	case Z80NEO_GFX_PIXEL_C:
+		gfx_set_pixel(t, t->gfx_params[0] | (t->gfx_params[1] << 8),
+					  t->gfx_params[2] | (t->gfx_params[3] << 8),
+					  t->gfx_params[4]);
 		break;
 	}
 }
@@ -507,6 +490,8 @@ static void csi_dispatch(Terminal *t, uint8_t start_char, uint8_t final_char,
 			case 3:
 				clear_screen(t);
 				break;
+			case 4: /* smooth scroll: accepted (no-op here) */
+				break;
 			case 5:
 				t->screen_inverted = on;
 				break;
@@ -516,6 +501,8 @@ static void csi_dispatch(Terminal *t, uint8_t start_char, uint8_t final_char,
 				break;
 			case 7:
 				t->autowrap = on;
+				break;
+			case 12: /* local echo (send-receive): accepted (no-op) */
 				break;
 			case 25:
 				t->cursor_visible = on;
@@ -668,7 +655,7 @@ static void feed_vt102(Terminal *t, uint8_t c) {
 			t->params[0] = 0;
 			t->state = TS_STARTCHAR;
 			break;
-		case 'g':
+		case Z80NEO_GFX_ID:
 			t->state = TS_GFXCMD;
 			t->gfx_need = -1;
 			break;
@@ -704,6 +691,10 @@ static void feed_vt102(Terminal *t, uint8_t c) {
 		case 'E':
 			t->cx = 0;
 			index_down(t);
+			break;
+		case 'I':
+			t->cx = 0;
+			reverse_index(t);
 			break;
 		case 'M':
 			reverse_index(t);
@@ -767,25 +758,11 @@ static void feed_vt102(Terminal *t, uint8_t c) {
 		if (t->gfx_need < 0) {
 			t->gfx_cmd = c;
 			t->gfx_index = 0;
-			switch (c) {
-			case 0x01:
-			case 0x02:
-				t->gfx_need = 1;
-				break;
-			case 0x03:
-				t->gfx_need = 2;
-				break;
-			case 0x04:
-				t->gfx_need = 5;
-				break;
-			case 0x05:
-			case 0x06:
-				t->gfx_need = 9;
-				break;
-			default:
+			int len = z80neo_gfx_payload_len(c);
+			if (len < 0)
 				t->state = TS_NORMAL;
-				break;
-			}
+			else
+				t->gfx_need = len;
 		} else {
 			t->gfx_params[t->gfx_index++] = c;
 			if (t->gfx_index >= t->gfx_need) {
@@ -937,20 +914,8 @@ bool terminal_vt52(const Terminal *t) { return t->vt52_mode; }
 unsigned terminal_bell_count(const Terminal *t) { return t->bell_count; }
 
 bool terminal_gfx_active(const Terminal *t) { return t->gfx_active; }
-const uint8_t *terminal_gfx_bits(const Terminal *t) { return t->gfx_buf; }
+const uint8_t *terminal_gfx_pixels(const Terminal *t) { return t->gfx_buf; }
 uint8_t terminal_gfx_bg(const Terminal *t) { return t->gfx_bg; }
-
-void terminal_gfx_cell_color(const Terminal *t, int col, int row, uint8_t *fg,
-							 uint8_t *bg) {
-	if (col < 0 || col >= TERM_GFX_STRIDE || row < 0 || row >= TERM_GFX_ROWS) {
-		*fg = t->gfx_fg;
-		*bg = t->gfx_bg;
-		return;
-	}
-	size_t idx = (size_t)row * TERM_GFX_STRIDE + col;
-	*fg = t->gfx_cell_fg[idx];
-	*bg = t->gfx_cell_bg[idx];
-}
 
 void terminal_feed(Terminal *t, const uint8_t *data, size_t len) {
 	for (size_t i = 0; i < len; i++) {

@@ -31,6 +31,10 @@ extern "C"
 
 static uint8_t *charbuf = NULL;
 static sSegm*   textSeg = NULL;
+#ifdef GFX_TRUECOLOR
+static sSegm*   gfxSeg  = NULL;
+static sScreen  gfxScreen;   // graphics mode: one 256-line strip
+#endif
 
 // defined in framebuf.c
 extern int16_t framebuf_flash_counter;
@@ -150,6 +154,21 @@ static void framebuf_vga_new_frame()
 }
 
 
+#ifdef GFX_TRUECOLOR
+// Switch between the text screen and the graphics screen.  The graphics
+// segment is a native 8-bit (R3G3B2) layer fed straight from
+// framebuf_gfx_buf, which is the same buffer the DVI path palettes.
+extern "C" void framebuf_vga_gfx_enable(bool on)
+{
+  if( gfxSeg==NULL ) return;
+  gfxSeg->width = on ? GFX_WIDTH : 0;
+  __dmb();
+  pScreen = on ? &gfxScreen : &Screen;
+  __dmb();
+}
+#endif
+
+
 extern "C" void enable_fpu(void);
 
 static void framebuf_vga_core1(void)
@@ -178,6 +197,20 @@ void framebuf_vga_init(uint8_t *databuf, uint8_t *rowattr)
   textSeg = ScreenAddSegm(t, FRAME_WIDTH);
   ScreenSegmCText(textSeg, charbuf, font_get_data_blinkon(), font_get_char_height(), MAX_COLS*4);
   textSeg->par2 = (uint32_t) rowattr;
+
+#ifdef GFX_TRUECOLOR
+  // Graphics screen: a single 256-line strip holding the 640x256 native
+  // R3G3B2 layer.  It is selected by framebuf_vga_gfx_enable(); the lines
+  // below it render black (PicoVGA clears them).
+  ScreenClear(&gfxScreen);
+  sStrip* gt = ScreenAddStrip(&gfxScreen, GFX_HEIGHT);
+  gfxSeg = ScreenAddSegm(gt, 0);
+  ScreenSegmGraph8(gfxSeg, framebuf_gfx_buf, GFX_WIDTH);
+  gfxSeg->wrapx = GFX_WIDTH;
+  gfxSeg->wrapy = GFX_HEIGHT;
+  __dmb();
+#endif
+
   VgaSetNewFrameCallback(framebuf_vga_new_frame);
   
   // initialize system clock

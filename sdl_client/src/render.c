@@ -30,7 +30,7 @@ static void render_gfx(const Terminal *t, uint32_t *pixels, int cols,
 	int yoff = (frame_h - TERM_GFX_HEIGHT) / 2;
 	if (yoff < 0)
 		yoff = 0;
-	const uint8_t *bits = terminal_gfx_bits(t);
+	const uint8_t *gfx = terminal_gfx_pixels(t);
 	uint32_t outside = palette[terminal_gfx_bg(t) & 15];
 
 	for (int y = 0; y < frame_h; y++) {
@@ -41,10 +41,7 @@ static void render_gfx(const Terminal *t, uint32_t *pixels, int cols,
 				dst[x] = outside;
 				continue;
 			}
-			int bit = (bits[gy * TERM_GFX_STRIDE + (x >> 3)] >> (x & 7)) & 1;
-			uint8_t fg, bg;
-			terminal_gfx_cell_color(t, x >> 3, gy / TERM_GFX_CELL_H, &fg, &bg);
-			dst[x] = palette[(bit ? fg : bg) & 15];
+			dst[x] = palette[gfx[gy * TERM_GFX_WIDTH + x] & 15];
 		}
 	}
 }

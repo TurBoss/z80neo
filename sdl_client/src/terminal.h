@@ -15,12 +15,10 @@
 
 #define TERM_OUT_MAX 4096
 
-/* VoidVDP bitmap layer (the VDP is 640x256, two colours per 8x16 cell). */
+/* VoidVDP true-colour bitmap layer: 640x256, one 4-bit palette index per pixel
+   (stored in a byte). */
 #define TERM_GFX_WIDTH 640
 #define TERM_GFX_HEIGHT 256
-#define TERM_GFX_STRIDE (TERM_GFX_WIDTH / 8)
-#define TERM_GFX_CELL_H 16
-#define TERM_GFX_ROWS (TERM_GFX_HEIGHT / TERM_GFX_CELL_H)
 
 typedef struct {
 	uint32_t ch;
@@ -47,11 +45,9 @@ bool terminal_vt52(const Terminal *t);
 unsigned terminal_bell_count(const Terminal *t);
 
 /* VoidVDP bitmap layer.  When active the client renders this instead of the
-   text grid.  `bits` is 1bpp, TERM_GFX_STRIDE bytes per row. */
+   text grid.  `pixels` is one palette index per pixel, row-major, 640 wide. */
 bool terminal_gfx_active(const Terminal *t);
-const uint8_t *terminal_gfx_bits(const Terminal *t);
-void terminal_gfx_cell_color(const Terminal *t, int col, int row, uint8_t *fg,
-							 uint8_t *bg);
+const uint8_t *terminal_gfx_pixels(const Terminal *t);
 uint8_t terminal_gfx_bg(const Terminal *t);
 
 void terminal_feed(Terminal *t, const uint8_t *data, size_t len);

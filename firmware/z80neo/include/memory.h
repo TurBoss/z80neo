@@ -52,9 +52,18 @@ extern float CPU_DUTY;
 #define STOP_BITS  1
 #define PARITY     UART_PARITY_NONE
 
+// Second UART (SIO channel B): hardware UART1 on free GPIO36/37, exposed to the
+// Z80 on ports 0x90 (data) / 0x91 (status).  Independent of the console UART0.
+#define UART1_ID      uart1
+#define UART1_TX_PIN  36
+#define UART1_RX_PIN  37
+
 // Console baud rate (defined in memory.c).  Defaults to BAUD_RATE and may be
 // overridden by a trailing "BAUD <n>" line in Z80NEO.INI.
 extern uint32_t UART_BAUD;
+
+void uart1_init(void);
+void uart1_poll(void);
 
 // UART RX buffer
 #define UART_BUF_SIZE 256

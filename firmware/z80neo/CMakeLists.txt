@@ -6,6 +6,7 @@ add_executable(z80neo
  src/ssd1306_i2c.c
  src/usb_descriptors.c
  src/display.c
+ src/screensaver.c
  src/memory.c
  src/i2c_ee.c
  src/cpm_disk.c
@@ -42,6 +43,7 @@ endif()
 target_link_libraries(z80neo
  pico_stdlib
  pico_multicore
+ pico_rand
  hardware_psram
  pico_unique_id
  hardware_gpio

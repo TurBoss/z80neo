@@ -126,6 +126,9 @@ int main(void) {
     // Keep FIFO enabled (default) for hardware buffering —
     // our software TX buffer in uart_status_handler flushes into it safely.
 
+    // Second UART (SIO channel B, Z80 ports 0x90/0x91) on GPIO36/37.
+    uart1_init();
+
     uart_status_handler();
 
     uart_puts(UART_ID, "\r\n");
@@ -473,5 +476,8 @@ int main(void) {
         // during that echo throws away the user's next character (fast typing /
         // paste loses input).  The terminal must run with local echo OFF.
         uart_rx_poll();
+
+        // Second UART: flush TX and drain RX (Z80 ports 0x90/0x91).
+        uart1_poll();
     }
 }

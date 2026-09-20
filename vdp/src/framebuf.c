@@ -550,6 +550,9 @@ void framebuf_apply_settings()
   for(int i=0; i<256; i++) color_map_inv[i] = 0;
   for(int i=0; i<16; i++)  color_map_inv[mapcolor(i)] = i;
   scroll_delay = 0;
+#ifdef GFX_TRUECOLOR
+  if( is_dvi ) framebuf_dvi_gfx_palette_refresh();
+#endif
 }
 
 
@@ -589,7 +592,11 @@ void framebuf_init(bool forceDVI)
 // ===========================================================================
 
 bool    framebuf_gfx_active = false;
+#ifdef GFX_TRUECOLOR
+uint8_t __attribute__((aligned(4))) framebuf_gfx_buf[GFX_WIDTH * GFX_HEIGHT];
+#else
 uint8_t framebuf_gfx_buf[GFX_STRIDE * GFX_HEIGHT];
+#endif
 static uint8_t gfx_fg = 15, gfx_bg = 0;
 
 
@@ -606,6 +613,7 @@ void framebuf_gfx_get_colors(uint8_t *fg, uint8_t *bg)
 }
 
 
+#ifndef GFX_TRUECOLOR
 // Set the fg/bg colours of the character cell that contains pixel (x,y).  A
 // cell can show two colours (fg = set pixels, bg = clear pixels).
 static void gfx_apply_cell(int x, int y)
@@ -617,12 +625,26 @@ static void gfx_apply_cell(int x, int y)
   if( cx < (int) MAX_COLS && cy < (int) MAX_ROWS )
     set_color(cy*MAX_COLS+cx, gfx_fg, gfx_bg);
 }
+#endif
 
 
 bool framebuf_gfx_enable(bool on)
 {
   if( on == framebuf_gfx_active ) return framebuf_gfx_active;
 
+#ifdef GFX_TRUECOLOR
+  if( on )
+    {
+      // True-colour layer: fill with the background colour.
+      memset(framebuf_gfx_buf, mapcolor(gfx_bg), sizeof(framebuf_gfx_buf));
+      if( is_dvi ) framebuf_dvi_gfx_palette_refresh();
+      else         framebuf_vga_gfx_enable(true);
+    }
+  else
+    {
+      if( !is_dvi ) framebuf_vga_gfx_enable(false);
+    }
+#else
   uint32_t rows = MAX_ROWS, cols = MAX_COLS;
 
   if( on )
@@ -646,6 +668,7 @@ bool framebuf_gfx_enable(bool on)
         for(uint32_t c=0; c<cols; c++)
           set_char(r*cols+c, ' ');
     }
+#endif
 
   framebuf_gfx_active = on;
   return on;
@@ -661,11 +684,15 @@ void framebuf_gfx_set_colors(uint8_t fg, uint8_t bg)
 
 void framebuf_gfx_clear()
 {
+#ifdef GFX_TRUECOLOR
+  memset(framebuf_gfx_buf, mapcolor(gfx_bg), sizeof(framebuf_gfx_buf));
+#else
   uint32_t rows = MAX_ROWS, cols = MAX_COLS;
   memset(framebuf_gfx_buf, 0, sizeof(framebuf_gfx_buf));
   for(uint32_t r=0; r<rows; r++)
     for(uint32_t c=0; c<cols; c++)
       set_color(r*cols+c, gfx_fg, gfx_bg);
+#endif
 }
 
 
@@ -673,18 +700,66 @@ void framebuf_gfx_pixel(int x, int y, bool on)
 {
   if( x<0 || x>=GFX_WIDTH || y<0 || y>=GFX_HEIGHT ) return;
 
+#ifdef GFX_TRUECOLOR
+  framebuf_gfx_buf[y*GFX_WIDTH + x] = mapcolor(on ? gfx_fg : gfx_bg);
+#else
   uint8_t *p = &framebuf_gfx_buf[y*GFX_STRIDE + (x>>3)];
   uint8_t  m = (uint8_t) (1 << (x & 7));
   if( on ) *p |= m; else *p &= ~m;
 
   gfx_apply_cell(x, y);
+#endif
+}
+
+
+void framebuf_gfx_set_pixel(int x, int y, uint8_t colour)
+{
+#ifdef GFX_TRUECOLOR
+  if( x<0 || x>=GFX_WIDTH || y<0 || y>=GFX_HEIGHT ) return;
+  framebuf_gfx_buf[y*GFX_WIDTH + x] = mapcolor(colour & 0x0F);
+#endif
 }
 
 
 bool framebuf_gfx_get_pixel(int x, int y)
 {
   if( x<0 || x>=GFX_WIDTH || y<0 || y>=GFX_HEIGHT ) return false;
+#ifdef GFX_TRUECOLOR
+  return framebuf_gfx_buf[y*GFX_WIDTH + x] != mapcolor(gfx_bg);
+#else
   return (framebuf_gfx_buf[y*GFX_STRIDE + (x>>3)] & (1 << (x & 7))) != 0;
+#endif
+}
+
+
+uint8_t framebuf_gfx_get_color(int x, int y)
+{
+  if( x<0 || x>=GFX_WIDTH || y<0 || y>=GFX_HEIGHT ) return gfx_bg;
+#ifdef GFX_TRUECOLOR
+  return framebuf_gfx_buf[y*GFX_WIDTH + x];
+#else
+  return (framebuf_gfx_buf[y*GFX_STRIDE + (x>>3)] & (1 << (x & 7))) ? gfx_fg : gfx_bg;
+#endif
+}
+
+
+// The background as stored in the graphics buffer (display colour, not the
+// palette index).  Used for pixels outside the 640x256 layer.
+uint8_t framebuf_gfx_bg_color()
+{
+  return mapcolor(gfx_bg);
+}
+
+
+// The graphics layer is available on DVI always, and on VGA only where the
+// RP2350 has the RAM for the true-colour buffer.
+bool framebuf_gfx_supported()
+{
+#ifdef GFX_TRUECOLOR
+  return true;
+#else
+  return is_dvi;
+#endif
 }
 
 

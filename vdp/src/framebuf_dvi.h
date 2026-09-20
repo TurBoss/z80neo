@@ -42,4 +42,7 @@ uint32_t framebuf_dvi_get_char_and_attr(uint32_t idx);
 
 void framebuf_dvi_flash_screen(uint8_t color, uint8_t nframes);
 
+// Rebuild the true-colour graphics TMDS palette from the terminal colours.
+void framebuf_dvi_gfx_palette_refresh(void);
+
 #endif

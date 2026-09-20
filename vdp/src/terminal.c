@@ -27,6 +27,7 @@
 #include "sound.h"
 #include "keyboard.h"
 #include "hardware/uart.h"
+#include "../../common/z80neo_protocol.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -432,6 +433,17 @@ static void INFLASHFUN terminal_process_command(char start_char, char final_char
       cur_attr = framebuf_get_attr(cursor_col, cursor_row);
       show_cursor(cursor_shown);
     }
+  else if( final_char=='X' )
+    {
+      // erase n characters from the cursor (no cursor movement)
+      int n   = MAX(1, params[0]);
+      int end = cursor_col + n - 1;
+      int lim = framebuf_get_ncols(cursor_row) - 1;
+      if( end > lim ) end = lim;
+      framebuf_fill_region(cursor_col, cursor_row, end, cursor_row, ' ', color_fg, color_bg);
+      cur_attr = framebuf_get_attr(cursor_col, cursor_row);
+      show_cursor(cursor_shown);
+    }
   else if( final_char=='A' )
     {
       move_cursor_limited(cursor_row-MAX(1, params[0]), cursor_col);
@@ -567,12 +579,16 @@ static void INFLASHFUN terminal_process_command(char start_char, char final_char
             attr &= ~ATTR_INVERSE;
           else if( p>=30 && p<=37 )
             color_fg = p-30;
+          else if( p>=90 && p<=97 )
+            color_fg = (p-90) | 8;
           else if( p==38 && num_params>=i+2 && params[i+1]==5 )
             { color_fg = params[i+2] & 15; i+=2; }
           else if( p==39 )
             color_fg = config_get_terminal_default_fg();
           else if( p>=40 && p<=47 )
             color_bg = p-40;
+          else if( p>=100 && p<=107 )
+            color_bg = (p-100) | 8;
           else if( p==48 && num_params>=i+2 && params[i+1]==5 )
             { color_bg = params[i+2] & 15; i+=2; }
           else if( p==49 )
@@ -682,31 +698,31 @@ static void INFLASHFUN terminal_gfx_putchar(char c)
 // in gfx_params[].  Protocol: ESC 'g' <cmd> <fixed payload>.
 static void INFLASHFUN terminal_gfx_exec()
 {
-  if( !framebuf_is_dvi() ) return;  // bitmap layer is DVI-only for now
+  if( !framebuf_gfx_supported() ) return;
 
   switch( gfx_cmd )
     {
-    case 0x01: // mode: 0 = text, 1 = bitmap
+    case Z80NEO_GFX_MODE: // mode: 0 = text, 1 = bitmap
       gfx_col = gfx_row = 0;
       framebuf_gfx_enable(gfx_params[0]!=0);
       break;
 
-    case 0x02: // clear bitmap
+    case Z80NEO_GFX_CLEAR: // clear bitmap
       gfx_col = gfx_row = 0;
       framebuf_gfx_clear();
       break;
 
-    case 0x03: // set fg/bg colours
+    case Z80NEO_GFX_COLOR: // set fg/bg colours
       framebuf_gfx_set_colors(gfx_params[0], gfx_params[1]);
       break;
 
-    case 0x04: // plot pixel
+    case Z80NEO_GFX_PIXEL: // plot pixel
       framebuf_gfx_pixel(gfx_params[0] | (gfx_params[1]<<8),
                          gfx_params[2] | (gfx_params[3]<<8),
                          gfx_params[4]!=0);
       break;
 
-    case 0x05: // draw line
+    case Z80NEO_GFX_LINE: // draw line
       framebuf_gfx_line(gfx_params[0] | (gfx_params[1]<<8),
                         gfx_params[2] | (gfx_params[3]<<8),
                         gfx_params[4] | (gfx_params[5]<<8),
@@ -714,12 +730,18 @@ static void INFLASHFUN terminal_gfx_exec()
                         gfx_params[8]!=0);
       break;
 
-    case 0x06: // fill rectangle
+    case Z80NEO_GFX_FILL: // fill rectangle
       framebuf_gfx_fill(gfx_params[0] | (gfx_params[1]<<8),
                         gfx_params[2] | (gfx_params[3]<<8),
                         gfx_params[4] | (gfx_params[5]<<8),
                         gfx_params[6] | (gfx_params[7]<<8),
                         gfx_params[8]!=0);
+      break;
+
+    case Z80NEO_GFX_PIXEL_C: // set pixel to an explicit palette colour
+      framebuf_gfx_set_pixel(gfx_params[0] | (gfx_params[1]<<8),
+                             gfx_params[2] | (gfx_params[3]<<8),
+                             gfx_params[4]);
       break;
     }
 }
@@ -775,7 +797,7 @@ void INFLASHFUN terminal_receive_char_vt102(char c)
         terminal_state = TS_NORMAL;
 
         // while the bitmap is displayed, ignore all escapes but graphics
-        if( framebuf_gfx_active && c!='g' )
+        if( framebuf_gfx_active && c!=Z80NEO_GFX_ID )
           break;
 
         switch( c )
@@ -787,7 +809,7 @@ void INFLASHFUN terminal_receive_char_vt102(char c)
             terminal_state = TS_STARTCHAR;
             break;
 
-          case 'g':
+          case Z80NEO_GFX_ID:
             gfx_cmd = 0; gfx_len = 0; gfx_index = 0;
             terminal_state = TS_GFXCMD;
             break;
@@ -917,16 +939,11 @@ void INFLASHFUN terminal_receive_char_vt102(char c)
             // first byte is the command; set the expected payload length
             gfx_cmd = c;
             gfx_index = 0;
-            switch( c )
-              {
-              case 0x01: gfx_len = 1; break;  // mode
-              case 0x02: gfx_len = 1; break;  // clear
-              case 0x03: gfx_len = 2; break;  // colours
-              case 0x04: gfx_len = 5; break;  // pixel
-              case 0x05: gfx_len = 9; break;  // line
-              case 0x06: gfx_len = 9; break;  // fill
-              default:   terminal_state = TS_NORMAL; break;
-              }
+            int len = z80neo_gfx_payload_len(c);
+            if( len<0 )
+              terminal_state = TS_NORMAL;
+            else
+              gfx_len = (uint8_t) len;
           }
         else
           {

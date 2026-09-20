@@ -48,6 +48,19 @@
 \name:
 .endm
 
+// Palette loops run in normal RAM (.time_critical) rather than SCRATCH_X/Y:
+// the RP2350 build has room there, and SCRATCH_X is full with the text font
+// encoder and the core-1 stack.
+.macro decl_func_tc name
+.section .time_critical.\name, "ax"
+.global \name
+#ifdef __arm__
+.type \name,%function
+.thumb_func
+#endif
+\name:
+.endm
+
 #define decl_func decl_func_x
 
 // ----------------------------------------------------------------------------
@@ -851,9 +864,9 @@ decl_func_y tmds_fullres_encode_loop_16bpp_leftshift_y
 
 #endif
 
-decl_func_x tmds_palette_encode_loop_x
+decl_func_tc tmds_palette_encode_loop_x
 	tmds_palette_encode_loop
-decl_func_y tmds_palette_encode_loop_y
+decl_func_tc tmds_palette_encode_loop_y
 	tmds_palette_encode_loop
 
 // ----------------------------------------------------------------------------

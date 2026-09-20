@@ -56,6 +56,21 @@ uint16_t tx_head = 0;
 uint16_t tx_tail = 0;
 uint16_t tx_count = 0;
 
+// Second UART (SIO channel B) — UART1 on GPIO36/37, ports 0x90/0x91.  Same
+// software-ring scheme as the console, but with no local-echo filtering (it is
+// a separate physical link) and no Fuzix serial interrupt.
+char     rx1_buffer[UART_BUF_SIZE];
+uint16_t rx1_count = 0;
+uint16_t rx1_index = 0;
+uint16_t rx1_read  = 0;
+bool     rx1_data_available = false;
+
+volatile uint8_t serial_status_2 = 0x02;
+uint8_t  tx1_buffer[UART_TX_BUF_SIZE];
+uint16_t tx1_head = 0;
+uint16_t tx1_tail = 0;
+uint16_t tx1_count = 0;
+
 // Terminal local-echo cancellation.  If the terminal echoes what the Pico
 // sends, that echo arrives on RX and the Z80 reads its own output back as
 // input (which makes the CCP see spurious commands / Ctrl-C -> warm-boot loop).
@@ -223,6 +238,9 @@ void mmu_write(uint16_t addr, uint8_t data) {
 // I/O device handler — UART + MMU ports (handled by GPIO IRQ on IORQ)
 // ===========================================================================
 
+static void uart1_rx_poll(void);
+static char read_uart1_char(void);
+
 uint8_t io_read_port(uint8_t port) {
     switch (port) {
     case SERIAL_PORT_1:  // 0x80 — serial data (repo build)
@@ -263,6 +281,18 @@ uint8_t io_read_port(uint8_t port) {
         rx_data_available = (rx_count > 0);
         serial_status_1 = rx_data_available ? (serial_status_1 | 0x01) : (serial_status_1 & ~0x01);
         return serial_status_1;
+    case SERIAL_PORT_2: {   // 0x90 — second UART (UART1) data
+        uart1_rx_poll();
+        uint8_t ch = (uint8_t)read_uart1_char();
+        rx1_data_available = (rx1_count > 0);
+        serial_status_2 = rx1_data_available ? (serial_status_2 | 0x01) : (serial_status_2 & ~0x01);
+        return ch;
+    }
+    case SERIAL_STATUS_2:   // 0x91 — second UART status (bit0 RX, bit1 TX)
+        uart1_rx_poll();
+        rx1_data_available = (rx1_count > 0);
+        serial_status_2 = rx1_data_available ? (serial_status_2 | 0x01) : (serial_status_2 & ~0x01);
+        return serial_status_2;
     case 0xF0: return mmu_page[0];
     case 0xF1: return mmu_page[1];
     case 0xF2: return mmu_page[2];
@@ -282,6 +312,14 @@ void io_write_port(uint8_t port, uint8_t data) {
             tx_count++;
         }
         serial_status_1 = (tx_count < UART_TX_BUF_SIZE) ? (serial_status_1 | 0x02) : (serial_status_1 & ~0x02);
+        break;
+    case SERIAL_PORT_2:  // 0x90 — second UART (UART1) data
+        if (tx1_count < UART_TX_BUF_SIZE) {
+            tx1_buffer[tx1_head++] = data;
+            if (tx1_head >= UART_TX_BUF_SIZE) tx1_head = 0;
+            tx1_count++;
+        }
+        serial_status_2 = (tx1_count < UART_TX_BUF_SIZE) ? (serial_status_2 | 0x02) : (serial_status_2 & ~0x02);
         break;
     case 0xF0: mmu_page[0] = data; break;
     case 0xF1: mmu_page[1] = data; break;
@@ -375,6 +413,60 @@ void uart_status_handler(void) {
                       ? (serial_status_1 | 0x02) : (serial_status_1 & ~0x02);
     if (rx_data_available) serial_status_1 |= 0x01;
     else                   serial_status_1 &= ~0x01;
+}
+
+// ===========================================================================
+// Second UART (UART1) — SIO channel B on ports 0x90/0x91
+// ===========================================================================
+
+void uart1_init(void) {
+    uart_init(UART1_ID, BAUD_RATE);
+    gpio_pull_up(UART1_RX_PIN);
+    gpio_set_function(UART1_TX_PIN, UART_FUNCSEL_NUM(UART1_ID, UART1_TX_PIN));
+    gpio_set_function(UART1_RX_PIN, UART_FUNCSEL_NUM(UART1_ID, UART1_RX_PIN));
+    uart_set_baudrate(UART1_ID, BAUD_RATE);
+    uart_set_hw_flow(UART1_ID, false, false);
+    uart_set_format(UART1_ID, DATA_BITS, STOP_BITS, PARITY);
+}
+
+static void uart1_rx_poll(void) {
+    while (uart_is_readable(UART1_ID)) {
+        uint8_t c = uart_getc(UART1_ID);
+        if (rx1_count >= UART_BUF_SIZE) {
+            rx1_read = (rx1_read + 1) % UART_BUF_SIZE;
+            rx1_count--;
+        }
+        rx1_buffer[rx1_index] = c;
+        rx1_index = (rx1_index + 1) % UART_BUF_SIZE;
+        rx1_count++;
+        rx1_data_available = true;
+    }
+}
+
+static char read_uart1_char(void) {
+    if (rx1_count > 0) {
+        char ch = rx1_buffer[rx1_read];
+        rx1_read = (rx1_read + 1) % UART_BUF_SIZE;
+        rx1_count--;
+        if (!rx1_count) rx1_data_available = false;
+        return ch;
+    }
+    rx1_data_available = false;
+    return 0;
+}
+
+void uart1_poll(void) {
+    while (tx1_count > 0 && uart_is_writable(UART1_ID)) {
+        uart_putc(UART1_ID, tx1_buffer[tx1_tail]);
+        tx1_tail = (tx1_tail + 1) % UART_TX_BUF_SIZE;
+        tx1_count--;
+    }
+    uart1_rx_poll();
+    rx1_data_available = (rx1_count > 0);
+    serial_status_2 = (uart_is_writable(UART1_ID) && tx1_count < UART_TX_BUF_SIZE)
+                      ? (serial_status_2 | 0x02) : (serial_status_2 & ~0x02);
+    if (rx1_data_available) serial_status_2 |= 0x01;
+    else                    serial_status_2 &= ~0x01;
 }
 
 // ===========================================================================

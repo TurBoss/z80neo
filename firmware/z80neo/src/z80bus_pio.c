@@ -1,5 +1,5 @@
 // z80bus_pio.c — PIO-accelerated Z80 bus handler (dual-SM capture)
-// SM0 (mem_sm=0): JMP_PIN = GPIO20 (MREQ), SET pin = GPIO7  -> Z80 WAIT (pin 24)
+// SM0 (mem_sm=0): JMP_PIN = GPIO20 (MREQ), SET pin = GPIO5  -> Z80 WAIT (pin 24)
 // SM1 (io_sm=1):  JMP_PIN = GPIO22 (IORQ), SET pin = GPIO4 -> Z80 WAIT (pin 24)
 //
 // The PIO asserts WAIT the moment a bus cycle starts and holds the Z80 stalled
@@ -210,7 +210,7 @@ static void handle_iorq(void) {
 
 static void handle_mem(void) {
     uint32_t t0 = time_us_32();
-    // PIO holds WAIT (GPIO7=0) — Z80 is stopped.
+    // PIO holds WAIT (GPIO5=0) — Z80 is stopped.
     //
     // A Z80 refresh cycle asserts MREQ (RFSH is not wired on this board) but
     // neither RD nor WR, so the mem SM fires on it.  Wait here for RD/WR to
@@ -393,22 +393,22 @@ void z80bus_pio_init(unsigned int z80_khz) {
     // both SMs share the same Z80 WAIT net.
     gpio_init(4); gpio_set_dir(4, GPIO_IN); gpio_pull_up(4);
     gpio_set_function(4, GPIO_FUNC_PIO0);
-    gpio_init(7); gpio_set_dir(7, GPIO_IN); gpio_pull_up(7);
-    gpio_set_function(7, GPIO_FUNC_PIO0);
+    gpio_init(5); gpio_set_dir(5, GPIO_IN); gpio_pull_up(5);
+    gpio_set_function(5, GPIO_FUNC_PIO0);
 
     // Load the two shared PIO programs (one per SM)
     uint off_mem = pio_add_program(bus_pio, &z80bus_pio_mem_program);
     uint off_io  = pio_add_program(bus_pio, &z80bus_pio_io_program);
 
-    // MEM SM: JMP_PIN=20 (MREQ), SET pins=GPIO7
+    // MEM SM: JMP_PIN=20 (MREQ), SET pins=GPIO5
     pio_sm_config cm = z80bus_pio_mem_program_get_default_config(off_mem);
     sm_config_set_in_pins(&cm, 12);
-    sm_config_set_set_pins(&cm, 7, 1);
+    sm_config_set_set_pins(&cm, 5, 1);
     sm_config_set_jmp_pin(&cm, 20);
     sm_config_set_in_shift(&cm, false, true, 32);
     sm_config_set_out_shift(&cm, true, false, 32);
     sm_config_set_clkdiv(&cm, 1.0f);
-    pio_sm_set_consecutive_pindirs(bus_pio, mem_sm, 7, 1, false);
+    pio_sm_set_consecutive_pindirs(bus_pio, mem_sm, 5, 1, false);
     pio_sm_set_consecutive_pindirs(bus_pio, mem_sm, 12, 16, false);
     pio_sm_init(bus_pio, mem_sm, off_mem, &cm);
     pio_sm_set_enabled(bus_pio, mem_sm, true);

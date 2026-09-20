@@ -29,6 +29,7 @@
 #include "dvi.h"
 #include "dvi_serialiser.h"
 #include "common_dvi_pin_configs.h"
+#include "tmds_encode.h"
 #include "tmds_encode_font_2bpp.h"
 
 #include "pins.h"
@@ -48,6 +49,39 @@ struct dvi_inst dvi0;
 static uint16_t *charbuf  = NULL;
 static uint32_t *colorbuf = NULL;
 static uint8_t  *rowattr  = NULL;
+
+#ifdef GFX_TRUECOLOR
+// Palette for the true-colour graphics layer, as TMDS symbols (3 channels x 2
+// disparity states per entry).  Only entries 0-15 are used, but the encoder is
+// driven with the fully-tested 8bpp path (PALETTE_BITS 8) so pixel bytes are
+// looked up whole; the unused upper entries are black.
+#define GFX_PALETTE_BITS 8
+#define GFX_PALETTE_SIZE (1 << GFX_PALETTE_BITS)
+
+static uint32_t gfx_tmds_palette[GFX_PALETTE_SIZE * 6];
+static uint8_t  gfx_blank_row[GFX_WIDTH] __attribute__((aligned(4)));
+
+void framebuf_dvi_gfx_palette_refresh()
+{
+  // The graphics buffer stores the terminal's 6-bit (RRGGBB) colour value per
+  // pixel (see mapcolor()), so the palette is simply the RGB222 expansion:
+  // entry i displays colour i.  The upper 192 entries are unused.
+  uint32_t pal[GFX_PALETTE_SIZE];
+  for(int i=0; i<GFX_PALETTE_SIZE; i++)
+    {
+      if( i<64 )
+        {
+          uint32_t r = ((i >> 4) & 0x3) * 85;
+          uint32_t g = ((i >> 2) & 0x3) * 85;
+          uint32_t b = ( i       & 0x3) * 85;
+          pal[i] = (r << 16) | (g << 8) | b;
+        }
+      else
+        pal[i] = 0;
+    }
+  tmds_setup_palette24_symbols(pal, gfx_tmds_palette, GFX_PALETTE_SIZE);
+}
+#endif
 
 
 void framebuf_dvi_charmemset(uint32_t idx, uint8_t c, uint8_t a, uint8_t fg, uint8_t bg, size_t n)
@@ -195,7 +229,9 @@ void __not_in_flash_func(core1_main)()
   uint8_t frameCtr = 0;
   const uint8_t* font = font_get_data_blinkon();
   static uint32_t solidcolor[MAX_COLS * 4 / 32];
+#ifndef GFX_TRUECOLOR
   static const uint8_t gfx_blank[GFX_STRIDE] = {0};
+#endif
   memset(solidcolor, 0, sizeof(solidcolor));
 
   while( true )
@@ -227,6 +263,27 @@ void __not_in_flash_func(core1_main)()
 
       if( framebuf_gfx_active )
         {
+#ifdef GFX_TRUECOLOR
+          // True-colour bitmap: one display-colour byte per pixel, encoded
+          // from the framebuffer row with the TMDS palette.
+          memset(gfx_blank_row, framebuf_gfx_bg_color(), sizeof(gfx_blank_row));
+
+          for(uint y = 0; y < FRAME_HEIGHT; ++y)
+            {
+              queue_remove_blocking(&dvi0.q_tmds_free, &tmdsbuf);
+
+              int gy = (int) y - GFX_YOFF;
+              const uint32_t *row = (gy>=0 && gy<GFX_HEIGHT)
+                ? (const uint32_t *)(framebuf_gfx_buf + gy*GFX_WIDTH)
+                : (const uint32_t *)gfx_blank_row;
+
+              tmds_encode_palette_data(row, gfx_tmds_palette, tmdsbuf, FRAME_WIDTH, GFX_PALETTE_BITS);
+
+              queue_add_blocking(&dvi0.q_tmds_valid, &tmdsbuf);
+            }
+
+          continue;
+#else
           // Bitmap mode: each cell's character code is its column index, so
           // the encoder's font lookup reads the scanline byte for that column
           // out of framebuf_gfx_buf rather than a glyph bitmap.
@@ -249,6 +306,7 @@ void __not_in_flash_func(core1_main)()
             }
 
           continue;
+#endif
         }
 
       for(uint y = 0; y < FRAME_HEIGHT; ++y)

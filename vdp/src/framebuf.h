@@ -71,18 +71,29 @@ void framebuf_set_screen_size(uint8_t ncols, uint8_t nrows);
 void framebuf_set_screen_inverted(bool invert);
 void framebuf_flash_screen(uint8_t color, uint8_t nframes);
 
-// ---- Monochrome bitmap graphics layer -------------------------------------
-// A 1bpp bitmap drawn on top of the character cells, two colours (fg/bg) per
-// character cell.  Only the DVI renderer implements it; on VGA the calls are
-// no-ops.  Pixels are addressed with bit (x&7) of byte (x>>3), matching the
-// font bit order used by the TMDS encoder (bit 0 = leftmost pixel).
+// ---- Bitmap graphics layer ------------------------------------------------
+// Drawn on top of the character cells.  Only the DVI renderer implements it;
+// on VGA the calls are no-ops.
+//
+// On RP2350 the layer is true-colour: one 4-bit palette index per pixel
+// (stored in a byte), so any pixel can use any of the 16 terminal colours.
+// The RP2040 build does not have the RAM for that and keeps the original
+// 1bpp layer with two colours (fg/bg) per character cell.
 #define GFX_WIDTH   640
 #define GFX_HEIGHT  256
 #define GFX_STRIDE  (GFX_WIDTH / 8)
 #define GFX_YOFF    ((FRAME_HEIGHT - GFX_HEIGHT) / 2)
 
+#if defined(PICO_RP2350) && PICO_RP2350
+#define GFX_TRUECOLOR 1
+#endif
+
 extern bool    framebuf_gfx_active;             // renderer reads this
+#ifdef GFX_TRUECOLOR
+extern uint8_t __attribute__((aligned(4))) framebuf_gfx_buf[GFX_WIDTH * GFX_HEIGHT];
+#else
 extern uint8_t framebuf_gfx_buf[GFX_STRIDE * GFX_HEIGHT];
+#endif
 
 bool framebuf_gfx_enabled();
 bool framebuf_gfx_enable(bool on);
@@ -90,9 +101,15 @@ void framebuf_gfx_clear();
 void framebuf_gfx_set_colors(uint8_t fg, uint8_t bg);
 void framebuf_gfx_get_colors(uint8_t *fg, uint8_t *bg);
 void framebuf_gfx_pixel(int x, int y, bool on);
+void framebuf_gfx_set_pixel(int x, int y, uint8_t colour);   // true-colour only
 bool framebuf_gfx_get_pixel(int x, int y);
+uint8_t framebuf_gfx_get_color(int x, int y);
+uint8_t framebuf_gfx_bg_color(void);
 void framebuf_gfx_line(int x0, int y0, int x1, int y1, bool on);
 void framebuf_gfx_fill(int x, int y, int w, int h, bool on);
 void framebuf_gfx_draw_char(int col, int row, uint8_t ch);
+
+// True if the graphics layer can be displayed on the active output.
+bool framebuf_gfx_supported(void);
 
 #endif

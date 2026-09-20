@@ -46,10 +46,11 @@
 // HDMI-detect pin on this board as DVI).
 // v3 (PS2_KEYBOARD builds only): USB role defaults to CDC device, since the
 // keyboard is PS/2 and the USB host controller is never started.
+// v4 / v3 (all builds): default serial baud is 115200 (was 9600).
 #ifdef PS2_KEYBOARD
-#define CONFIG_VERSION 3
+#define CONFIG_VERSION 4
 #else
-#define CONFIG_VERSION 2
+#define CONFIG_VERSION 3
 #endif
 
 // defined in main.c
@@ -1990,7 +1991,7 @@ static int INFLASHFUN baud_fn(const struct MenuItemStruct *item, int callType, i
     }
   else if( callType==IFT_DEFAULT )
     {
-      settings.Serial.baud = 9600;
+      settings.Serial.baud = 115200;
     }
 
   return res;

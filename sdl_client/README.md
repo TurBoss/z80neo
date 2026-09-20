@@ -85,12 +85,13 @@ visual flash always fires, and audio is simply skipped if no device is
 available.
 
 The VDP-specific bitmap graphics protocol (`ESC g`) **is** rendered: a 640x256
-1bpp layer with two colours per 8x16 cell (`ESC g` commands 1-6: bitmap on/off,
-clear, colour, pixel, line, filled rectangle).  It is drawn instead of the
-text grid while bitmap mode is active and centred vertically, matching the
-VDP, so the bare-metal `z80neo_gfx_*` demos and BBC BASIC graphics display
-here too.  (Text output is still parsed underneath; turning bitmap mode off
-restores the text screen.)
+true-colour layer, one 4-bit palette index per pixel, using the same 16-colour
+palette as the text screen (`ESC g` commands 1-7: bitmap on/off, clear,
+colour, pixel, line, filled rectangle, pixel-with-colour).  It is drawn
+instead of the text grid while bitmap mode is active and centred vertically,
+matching the VDP, so the bare-metal `z80neo_gfx_*` demos and BBC BASIC
+graphics display here too.  (Text output is still parsed underneath; turning
+bitmap mode off restores the text screen.)
 
 ## Font
 

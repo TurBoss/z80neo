@@ -21,6 +21,9 @@
 #ifndef FRAMEBUF_VGA_H
 #define FRAMEBUF_VGA_H
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -43,6 +46,9 @@ void framebuf_vga_invert();
 
 void framebuf_vga_set_char_and_attr(uint32_t idx, uint32_t c);
 uint32_t framebuf_vga_get_char_and_attr(uint32_t idx);
+
+// Show (on) or hide (off) the graphics layer, replacing the text layer.
+void framebuf_vga_gfx_enable(bool on);
 
 #ifdef __cplusplus
 }

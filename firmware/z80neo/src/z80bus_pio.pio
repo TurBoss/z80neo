@@ -1,6 +1,6 @@
 ; z80bus_pio.pio - dual-SM Z80 bus capture
 ;
-; SM0 (mem): JMP_PIN = GPIO20 (MREQ), SET pins = GPIO7  -> Z80 WAIT
+; SM0 (mem): JMP_PIN = GPIO20 (MREQ), SET pins = GPIO5  -> Z80 WAIT
 ; SM1 (io):  JMP_PIN = GPIO22 (IORQ), SET pins = GPIO4 -> Z80 WAIT
 ;
 ; Both WAIT pins are wired together on the board to the Z80 WAIT input.  The

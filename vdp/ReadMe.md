@@ -60,7 +60,7 @@ The builds use the **system** pico-sdk, not a bundled submodule:
   5 V on the adapter's VBUS.
 
 ## Console
-Serial console is **UART1 on GP20 (TX) / GP21 (RX)**, default 9600 8N1
+Serial console is **UART1 on GP20 (TX) / GP21 (RX)**, default 115200 8N1
 (configurable).  A Raspberry Pi Debug Probe with its UART bridged to those pins
 appears as a CDC-ACM `/dev/ttyACM*` on the host.
 

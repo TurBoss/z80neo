@@ -23,6 +23,10 @@ add_executable(VoidVDP
 target_compile_definitions(VoidVDP PRIVATE
 	DVI_VERTICAL_REPEAT=1
 	PICO_FLASH_SAFE_EXECUTE_PICO_SUPPORT_MULTICORE_LOCKOUT=1
+	# The palette encoder and the font encoder each fully reconfigure the SIO
+	# interpolators before use, so the per-scanline save/restore is redundant
+	# and costs time in the 640-pixel scanline budget.
+	TMDS_FULLRES_NO_INTERP_SAVE=1
 	)
 
 target_include_directories(VoidVDP PUBLIC
