@@ -22,6 +22,14 @@ UART1 RX  (0x90 read)   ->  console TX (0x80 write)
 | `0x90` | out | UART1 data |
 | `0x90` | in  | UART1 data (RX) |
 | `0x91` | in  | UART1 status: bit0 = RX ready, bit1 = TX ready |
+| `0x92` | in  | UART1 baud code (current) |
+| `0x93` | in  | UART1 line format (current) |
+
+The banner shows the live UART1 settings read from `0x92`/`0x93`. Because this
+is a bare-metal program there is no command line: the line settings come from
+the firmware, set in `Z80NEO.INI` as `UART1_BAUD` and `UART1_FORMAT` (e.g.
+`UART1_BAUD=19200`, `UART1_FORMAT=7E1`). The CP/M terminal (`TTERM.COM`) can
+change them at runtime via the same ports.
 
 ## Build
 
@@ -46,7 +54,8 @@ make Z88DK=/path/to/z88dk
 
 ## Notes
 
-- Both UARTs are **115200 8N1** by default.
+- Both UARTs are **115200 8N1** by default.  UART0 follows `BAUD`; UART1
+  follows `UART1_BAUD`/`UART1_FORMAT` in `Z80NEO.INI`.
 - Run the console terminal with **local echo OFF** (the VDP and `sdl_client`
   already are) — otherwise a typed character can echo back and forth.
 - The RP2350 pads are 3.3 V.  A 5 V TTL or RS-232 device on UART1 needs level

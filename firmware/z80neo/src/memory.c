@@ -131,6 +131,45 @@ volatile bool DEBUG_ADC = false;
 // Console baud rate.  Defaults to BAUD_RATE, overridable from Z80NEO.INI.
 uint32_t UART_BAUD = BAUD_RATE;
 
+// Second-UART line settings.  Defaults to 115200 8N1; overridable from
+// Z80NEO.INI and through the config ports (see uart1_configure).
+uint32_t UART1_BAUD      = BAUD_RATE;
+uint8_t  UART1_DATA_BITS = DATA_BITS;
+uint8_t  UART1_STOP_BITS = STOP_BITS;
+uint8_t  UART1_PARITY    = UART_PARITY_NONE;
+
+// Baud codes accepted on port 0x92 (index into this table) and reported back on
+// a read.  Code 0xFF means "not one of the standard rates".
+static const uint32_t uart1_baud_codes[] = {
+    115200, 57600, 38400, 19200, 9600, 4800, 2400, 1200, 600, 300,
+};
+#define UART1_BAUD_CODE_COUNT (sizeof(uart1_baud_codes) / sizeof(uart1_baud_codes[0]))
+
+static uint8_t uart1_baud_code(uint32_t baud) {
+    for (uint8_t i = 0; i < UART1_BAUD_CODE_COUNT; i++)
+        if (uart1_baud_codes[i] == baud) return i;
+    return 0xFF;
+}
+
+// Format byte: bits[1:0] = data bits - 5 (so 5..8 -> 0..3), bit3 = 2 stop bits,
+// bits[5:4] = parity (0 none, 1 even, 2 odd).  Bit7 is set on a read to mark a
+// firmware that implements this port (0x00 from an older firmware instead).
+#define UART1_FMT_VALID 0x80
+
+static uint8_t uart1_fmt_byte(void) {
+    return (uint8_t)(UART1_FMT_VALID |
+                     ((UART1_DATA_BITS - 5) & 0x03) |
+                     ((UART1_STOP_BITS == 2) ? 0x08 : 0x00) |
+                     ((UART1_PARITY & 0x03) << 4));
+}
+
+static void uart1_fmt_decode(uint8_t f, uint8_t *data_bits, uint8_t *stop_bits, uint8_t *parity) {
+    uint8_t p = (f >> 4) & 0x03;
+    *data_bits = (uint8_t)(5 + (f & 0x03));
+    *stop_bits = (f & 0x08) ? 2 : 1;
+    *parity    = (p > 2) ? 0 : p;
+}
+
 // Fuzix support.  `fuzix_mode` is set from Z80NEO.INI, changes the HEX loader
 // to a full-RAM (non-replicating) load and enables the hardware /INT timer.
 volatile bool    fuzix_mode = false;
@@ -293,6 +332,8 @@ uint8_t io_read_port(uint8_t port) {
         rx1_data_available = (rx1_count > 0);
         serial_status_2 = rx1_data_available ? (serial_status_2 | 0x01) : (serial_status_2 & ~0x01);
         return serial_status_2;
+    case SERIAL_CFG_BAUD: return uart1_baud_code(UART1_BAUD);
+    case SERIAL_CFG_FMT:  return uart1_fmt_byte();
     case 0xF0: return mmu_page[0];
     case 0xF1: return mmu_page[1];
     case 0xF2: return mmu_page[2];
@@ -321,6 +362,17 @@ void io_write_port(uint8_t port, uint8_t data) {
         }
         serial_status_2 = (tx1_count < UART_TX_BUF_SIZE) ? (serial_status_2 | 0x02) : (serial_status_2 & ~0x02);
         break;
+    case SERIAL_CFG_BAUD: {  // 0x92 — baud code (index into uart1_baud_codes)
+        if (data < UART1_BAUD_CODE_COUNT)
+            uart1_configure(uart1_baud_codes[data], UART1_DATA_BITS, UART1_STOP_BITS, UART1_PARITY);
+        break;
+    }
+    case SERIAL_CFG_FMT: {   // 0x93 — format byte
+        uint8_t db, sb, par;
+        uart1_fmt_decode(data, &db, &sb, &par);
+        uart1_configure(UART1_BAUD, db, sb, par);
+        break;
+    }
     case 0xF0: mmu_page[0] = data; break;
     case 0xF1: mmu_page[1] = data; break;
     case 0xF2: mmu_page[2] = data; break;
@@ -420,13 +472,32 @@ void uart_status_handler(void) {
 // ===========================================================================
 
 void uart1_init(void) {
-    uart_init(UART1_ID, BAUD_RATE);
+    uart_init(UART1_ID, UART1_BAUD);
     gpio_pull_up(UART1_RX_PIN);
     gpio_set_function(UART1_TX_PIN, UART_FUNCSEL_NUM(UART1_ID, UART1_TX_PIN));
     gpio_set_function(UART1_RX_PIN, UART_FUNCSEL_NUM(UART1_ID, UART1_RX_PIN));
-    uart_set_baudrate(UART1_ID, BAUD_RATE);
+    uart_set_baudrate(UART1_ID, UART1_BAUD);
     uart_set_hw_flow(UART1_ID, false, false);
-    uart_set_format(UART1_ID, DATA_BITS, STOP_BITS, PARITY);
+    uart_set_format(UART1_ID, UART1_DATA_BITS, UART1_STOP_BITS, UART1_PARITY);
+}
+
+// Re-tune UART1 at runtime (INI or config ports).  Invalid values are ignored
+// so a malformed write cannot leave the line in a broken state.  The GPIO mux
+// set by uart1_init() is left untouched.
+void uart1_configure(uint32_t baud, uint8_t data_bits, uint8_t stop_bits, uint8_t parity) {
+    if (baud < 300 || baud > 3000000) return;
+    if (data_bits < 5 || data_bits > 8) return;
+    if (stop_bits != 1 && stop_bits != 2) return;
+    if (parity > UART_PARITY_ODD) return;
+
+    UART1_BAUD      = baud;
+    UART1_DATA_BITS = data_bits;
+    UART1_STOP_BITS = stop_bits;
+    UART1_PARITY    = parity;
+
+    uart_set_baudrate(UART1_ID, baud);
+    uart_set_format(UART1_ID, data_bits, stop_bits, parity);
+    uart_set_hw_flow(UART1_ID, false, false);
 }
 
 static void uart1_rx_poll(void) {
@@ -540,6 +611,22 @@ static bool ini_hex3(const char *v, volatile uint16_t *dst) {
     return true;
 }
 
+// Parse an "8N1"-style line format: data bits 5..8, parity N/E/O, stop bits 1/2.
+static bool ini_parse_format(const char *v, uint8_t *data_bits, uint8_t *parity, uint8_t *stop_bits) {
+    char d = v[0], p = v[1], s = v[2];
+    if (d < '5' || d > '8') return false;
+    uint8_t par;
+    if (p == 'N' || p == 'n') par = UART_PARITY_NONE;
+    else if (p == 'E' || p == 'e') par = UART_PARITY_EVEN;
+    else if (p == 'O' || p == 'o') par = UART_PARITY_ODD;
+    else return false;
+    if (s != '1' && s != '2') return false;
+    *data_bits = (uint8_t)(d - '0');
+    *parity    = par;
+    *stop_bits = (uint8_t)(s - '0');
+    return true;
+}
+
 // Apply one named "KEY=VALUE" Z80NEO.INI line.  Unknown keys are ignored so a
 // file written for a newer firmware still boots.
 static void ini_apply_named(char *line) {
@@ -590,6 +677,20 @@ static void ini_apply_named(char *line) {
         long b = atol(v);
         if (b >= 300 && b <= 3000000) UART_BAUD = (uint32_t)b;
         print_line(0, "BAUD: %lu", (unsigned long)UART_BAUD);
+    } else if (ini_key_is(key, "UART1_BAUD")) {
+        long b = atol(v);
+        if (b >= 300 && b <= 3000000) UART1_BAUD = (uint32_t)b;
+        print_line(0, "U1 BAUD: %lu", (unsigned long)UART1_BAUD);
+    } else if (ini_key_is(key, "UART1_FORMAT")) {
+        uint8_t db, par, sb;
+        if (ini_parse_format(v, &db, &par, &sb)) {
+            UART1_DATA_BITS = db;
+            UART1_PARITY    = par;
+            UART1_STOP_BITS = sb;
+        }
+        char pc = (UART1_PARITY == UART_PARITY_EVEN) ? 'E'
+                  : (UART1_PARITY == UART_PARITY_ODD) ? 'O' : 'N';
+        print_line(0, "U1 FMT: %u%c%u", UART1_DATA_BITS, pc, UART1_STOP_BITS);
     } else {
         return; // unknown key: ignore
     }

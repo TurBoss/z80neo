@@ -255,6 +255,11 @@ int main(void) {
         uart_set_baudrate(UART_ID, UART_BAUD);
     }
 
+    // Apply the second-UART settings read from Z80NEO.INI (UART1_BAUD /
+    // UART1_FORMAT).  uart1_init() ran before the INI was parsed, so re-tune it
+    // here; the native uart1term and CP/M both use this line afterwards.
+    uart1_configure(UART1_BAUD, UART1_DATA_BITS, UART1_STOP_BITS, UART1_PARITY);
+
     clear_screen();
 
     uart_puts(UART_ID, "Loading program...\r\n");

@@ -194,6 +194,12 @@ bool keyboard_send_byte(uint8_t data)
   // send bits
   ok = keyboard_send_bits(data);
 
+  // Always release the bus (open-collector high). keyboard_send_bits()
+  // can return early while DATA is still driven low; leaving it low wedges
+  // the PS/2 bus so the keyboard can never talk back.
+  gpio_set_dir(PIN_PS2_DATA, false);
+  gpio_set_dir(PIN_PS2_CLOCK, false);
+
   // reset keyboard state
   kbd_state = KBD_START;
   

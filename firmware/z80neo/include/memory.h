@@ -62,8 +62,17 @@ extern float CPU_DUTY;
 // overridden by a trailing "BAUD <n>" line in Z80NEO.INI.
 extern uint32_t UART_BAUD;
 
+// Second-UART line settings (defined in memory.c).  Defaults to 115200 8N1 and
+// may be overridden from Z80NEO.INI (UART1_BAUD / UART1_FORMAT) and at runtime
+// through the config ports below, so the CP/M terminal can retune UART1.
+extern uint32_t UART1_BAUD;
+extern uint8_t  UART1_DATA_BITS;   // 5..8
+extern uint8_t  UART1_STOP_BITS;   // 1..2
+extern uint8_t  UART1_PARITY;      // uart_parity_t: 0 none, 1 even, 2 odd
+
 void uart1_init(void);
 void uart1_poll(void);
+void uart1_configure(uint32_t baud, uint8_t data_bits, uint8_t stop_bits, uint8_t parity);
 
 // UART RX buffer
 #define UART_BUF_SIZE 256
@@ -90,6 +99,13 @@ void uart1_poll(void);
 #define SERIAL_STATUS_1 0x81
 #define SERIAL_PORT_2   0x90
 #define SERIAL_STATUS_2 0x91
+
+// Second-UART configuration ports.  Write 0x92 with a baud code and 0x93 with a
+// format byte; read either back to get the current setting.  See UART1_BAUD /
+// UART1_FORMAT for the encodings (memory.c).  Lets a Z80 program (e.g. the CP/M
+// terminal) retune UART1 without a firmware rebuild.
+#define SERIAL_CFG_BAUD 0x92
+#define SERIAL_CFG_FMT  0x93
 
 // ---------------------------------------------------------------------------
 // Clock
