@@ -72,41 +72,49 @@ Firmware: rebuild and flash (`firmware/build.sh`, `firmware/upload.sh`) —
 3. Point `Z80NEO.INI` `PROG1` at `midiplayer.ihx`.
 4. Reset.  The console lists the files found in `/MIDI` (or the root); type a
    number, a filename, or just press Enter for the first file.  Press `q` or
-   `ESC` to stop.
+   `ESC` to stop the song: before returning, the player sends a **MIDI panic**
+   (All Sound Off `CC120`, All Notes Off `CC123`, Reset All Controllers `CC121`,
+   value 0) on all 16 channels so the synth does not leave notes hanging.  When a
+   song stops (or a file fails to open) the list is shown again so another can be
+   chosen without resetting; at the prompt `q` (or `Q`) exits the player.
 
 ## Timing / limits
 
 - The replay loop is assembly (`midi_play` in `midi_delay.asm`); an `sccz80` C
   loop spent ~14 ms per record on instruction fetches alone and ran ~2x slow.
 - The Z80 still costs a roughly fixed amount per record (instruction fetch +
-  port access with `WAIT`), which is not part of the musical timeline.  The
-  firmware credits a calibrated **`MIDI_GROUP_X10`** per record plus
-  **`MIDI_BYTE_X10`** per forwarded byte (both in tenths of a millisecond, so
-  the fractional part does not drift) against each record's delay, carrying any
-  shortfall forward into the next gap (`src/midi.c`).  A coalesced chord is
-  therefore credited once per tick instead of once per note — that is what
-  brings dense files back to 1.00x.  Re-measure and retune if the replay loop or
-  `CPU_SPEED` changes.
+  port access with `WAIT`), which is not part of the musical timeline.  Instead
+  of modelling that cost with fixed constants, the firmware schedules every
+  record against an **absolute playback clock** (the RP2350 microsecond timer):
+  each tick has a due time, and the delay handed to the Z80 is recomputed as
+  `due - now` on every record.  The Z80's replay cost shows up as elapsed time
+  before it asks for the next record, so it is measured and absorbed rather than
+  compensated by a tuned constant — a long song cannot drift, and the delay loop
+  does not need recalibrating.  A gap longer than the 16-bit millisecond field
+  is split into delay-only records so the bytes are never sent early.
+  Re-measure only if the *absolute* timing is wrong (e.g. a wrong tempo map).
 
-### Calibrating the speed
+### Optional speed trim
 
-The two credits are the only speed knobs.  They are read from `Z80NEO.INI`
-(no firmware rebuild needed), and the defaults are printed when the file is
-parsed:
+Two optional trims remain for deliberate bias; they are **0** by default and
+normally need no tuning.  They are read from `Z80NEO.INI` (no firmware rebuild
+needed):
 
 ```ini
-MIDI_GROUP_X10=30
-MIDI_BYTE_X10=12
+MIDI_GROUP_X10=0
+MIDI_BYTE_X10=0
 ```
 
-Play a file whose length you know and time it.  If it is **slow**, raise the
-credits; if **fast**, lower them.  `MIDI_GROUP_X10` dominates sparse files
-(one note at a time), `MIDI_BYTE_X10` dominates dense/chordal files.  As a
-first correction, multiply the relevant credit by `played / expected`.  The
-values are in tenths of a millisecond (so `30` = 3.0 ms, `12` = 1.2 ms).
+Each unit is a tenth of a millisecond **subtracted** from every record's delay
+(so raising them plays faster): `MIDI_GROUP_X10` per record, `MIDI_BYTE_X10` per
+forwarded byte.  Use them only to nudge a stream that is still slightly off after
+the absolute scheduler; the defaults are correct for a clean build.
+
 - The delay loop (`midi_delay_ms`) is calibrated for `CPU_SPEED` ~128 kHz
   **including** the Pico's per-access bus service (~9.6 µs), so `ld de,2`
-  (a T-state-only loop ran ~25% long).
+  (a T-state-only loop ran ~25% long).  The absolute scheduler tolerates a
+  miscalibrated loop (its error is bounded per record, not cumulative), so this
+  is only a comfort setting now.
 - Only the first 16 `MTrk` chunks are merged (`MIDI_MAX_TRACKS`); extra tracks
   are ignored.  SMF type 2 (independent sequences) is rejected, since a
   by-tick merge would scramble it.

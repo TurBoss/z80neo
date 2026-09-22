@@ -29,8 +29,10 @@ bool    midi_open(const char *name);
 void    midi_close(void);
 bool    midi_is_open(void);
 
-// Z80 replay-overhead calibration (tenths of a millisecond).  Overridable from
-// Z80NEO.INI; see src/midi.c for how they are applied.
+// Optional speed trim (tenths of a millisecond, subtracted from each record's
+// delay; 0 disables).  The scheduler uses the RP2350 clock, so these are a
+// deliberate bias, not required calibration.  Overridable from Z80NEO.INI; see
+// src/midi.c for how they are applied.
 extern uint32_t midi_credit_group_x10;
 extern uint32_t midi_credit_byte_x10;
 

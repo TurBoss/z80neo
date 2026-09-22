@@ -496,6 +496,12 @@ void uart1_init(void) {
     gpio_pull_up(UART1_RX_PIN);
     gpio_set_function(UART1_TX_PIN, UART_FUNCSEL_NUM(UART1_ID, UART1_TX_PIN));
     gpio_set_function(UART1_RX_PIN, UART_FUNCSEL_NUM(UART1_ID, UART1_RX_PIN));
+    // MIDI OUT drives an opto through a current-limiting resistor.  The default
+    // 4 mA pad drive can sag under the LED load (3.3 V, ~220 ohm -> ~9 mA) and
+    // round the edges; drive hard with fast slew so the LED current is clean at
+    // 31.25 kBd.  Harmless for a plain TTL link.
+    gpio_set_drive_strength(UART1_TX_PIN, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_slew_rate(UART1_TX_PIN, GPIO_SLEW_RATE_FAST);
     uart_set_baudrate(UART1_ID, UART1_BAUD);
     uart_set_hw_flow(UART1_ID, false, false);
     uart_set_format(UART1_ID, UART1_DATA_BITS, UART1_STOP_BITS, UART1_PARITY);
@@ -719,6 +725,14 @@ static void ini_apply_named(char *line) {
         long b = atol(v);
         if (b >= 0 && b <= 1000) midi_credit_byte_x10 = (uint32_t)b;
         print_line(0, "MD BYT: %lu", (unsigned long)midi_credit_byte_x10);
+    } else if (ini_key_is(key, "Z80_KHZ")) {
+        long khz = atol(v);
+        if (khz >= 32 && khz <= 1000) CPU_SPEED = (float)khz * 1000.0f;
+        print_line(0, "Z80 KHZ: %lu", (unsigned long)(CPU_SPEED / 1000.0f));
+    } else if (ini_key_is(key, "Z80_DUTY")) {
+        long pct = atol(v);
+        if (pct >= 5 && pct <= 95) CPU_DUTY = (float)pct / 100.0f;
+        print_line(0, "Z80 DTY: %lu%%", (unsigned long)(CPU_DUTY * 100.0f + 0.5f));
     } else {
         return; // unknown key: ignore
     }

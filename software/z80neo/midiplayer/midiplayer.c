@@ -209,27 +209,33 @@ static void make_path(char *out, uint8_t max, const char *name)
 	out[n] = '\0';
 }
 
-/* Ask for a number or a name; blank selects the first listed file. */
-static void choose_file(char *out)
+/* Ask for a number or a name; blank selects the first listed file.  Returns 0
+ * if the user asked to quit ('q'), 1 when a filename was written to `out`. */
+static uint8_t choose_file(char *out)
 {
 	char buf[NAME_MAX];
 	uint8_t i, digits;
 	uint16_t n;
 
-	con_puts("File # or name (blank = first): ");
+	con_puts("File # or name (blank = first, q = quit): ");
 	read_line(buf, sizeof buf);
+
+	if (buf[0] == 'q' && buf[1] == '\0')
+		return 0;
+	if (buf[0] == 'Q' && buf[1] == '\0')
+		return 0;
 
 	if (buf[0] == '\0') {
 		if (nfiles) {
 			const char *p = names[0];
 			while ((*out++ = *p++) != '\0')
 				;
-			return;
+			return 1;
 		}
 		const char *d = "SONG.MID";
 		while ((*out++ = *d++) != '\0')
 			;
-		return;
+		return 1;
 	}
 
 	digits = 1;
@@ -243,12 +249,33 @@ static void choose_file(char *out)
 			const char *p = names[n - 1];
 			while ((*out++ = *p++) != '\0')
 				;
-			return;
+			return 1;
 		}
 	}
 	for (i = 0; buf[i]; i++)
 		out[i] = buf[i];
 	out[i] = '\0';
+	return 1;
+}
+
+/* Pick the directory to list: /MIDI if it has files, else the card root.
+ * Returns 1 and sets g_dir on success, 0 when no files are available. */
+static uint8_t pick_dir(void)
+{
+	g_dir[0] = '\0';
+	if (scan_files(MIDI_DIR) == 0 && nfiles > 0) {
+		uint8_t i = 0;
+		const char *p = MIDI_DIR;
+		while (p[i] && i < (uint8_t)(sizeof g_dir - 1)) {
+			g_dir[i] = p[i];
+			i++;
+		}
+		g_dir[i] = '\0';
+		return 1;
+	}
+	if (scan_files("") == 0 && nfiles > 0)
+		return 1;
+	return 0;
 }
 
 /* ---- main -------------------------------------------------------------- */
@@ -266,50 +293,46 @@ int main(void)
 	con_puts(MIDI_CFG_BAUD == MIDI_BAUD_CODE ? " ok" : "  (need firmware code 10)");
 	con_puts("\r\n\r\n");
 
-	/* Prefer /MIDI on the card; fall back to the root. */
-	g_dir[0] = '\0';
-	if (scan_files(MIDI_DIR) == 0 && nfiles > 0) {
-		uint8_t i = 0;
-		const char *p = MIDI_DIR;
-		while (p[i] && i < (uint8_t)(sizeof g_dir - 1)) {
-			g_dir[i] = p[i];
-			i++;
+	/* Play one file, then list again so another can be chosen without a reset. */
+	for (;;) {
+		if (!pick_dir()) {
+			con_puts("No MIDI files found in ");
+			con_puts(MIDI_DIR);
+			con_puts(" or the root\r\n");
+			return 1;
 		}
-		g_dir[i] = '\0';
-	} else if (scan_files("") != 0 || nfiles == 0) {
-		con_puts("No MIDI files found in ");
-		con_puts(MIDI_DIR);
-		con_puts(" or the root\r\n");
-		return 1;
+
+		show_files();
+		con_puts("\r\n");
+		if (!choose_file(base))
+			break;
+		make_path(path, sizeof path, base);
+
+		con_puts("Opening ");
+		con_puts(path);
+		con_puts(" ... ");
+		FILE_RST = 0;
+		{
+			const char *p = path;
+			while (*p)
+				FILE_NAME = (uint8_t)*p++;
+		}
+		FILE_CMD = FCMD_OPEN_MIDI;
+		s = FILE_CMD;
+		if ((s & FST_OPEN) == 0) {
+			con_puts("failed (status 0x");
+			con_hex8(s);
+			con_puts(")\r\n\r\n");
+			continue;
+		}
+		con_puts("ok\r\nPlaying (q or ESC to stop)...\r\n");
+
+		midi_play();
+
+		con_puts("\r\nStopped.\r\n\r\n");
+		FILE_CMD = FCMD_CLOSE;
 	}
 
-	show_files();
-	con_puts("\r\n");
-	choose_file(base);
-	make_path(path, sizeof path, base);
-
-	con_puts("Opening ");
-	con_puts(path);
-	con_puts(" ... ");
-	FILE_RST = 0;
-	{
-		const char *p = path;
-		while (*p)
-			FILE_NAME = (uint8_t)*p++;
-	}
-	FILE_CMD = FCMD_OPEN_MIDI;
-	s = FILE_CMD;
-	if ((s & FST_OPEN) == 0) {
-		con_puts("failed (status 0x");
-		con_hex8(s);
-		con_puts(")\r\n");
-		return 1;
-	}
-	con_puts("ok\r\nPlaying (q or ESC to stop)...\r\n");
-
-	midi_play();
-
-	con_puts("\r\nStopped.\r\n");
-	FILE_CMD = FCMD_CLOSE;
+	con_puts("Bye.\r\n");
 	return 0;
 }

@@ -70,6 +70,34 @@ static void log_cpu_clock(void) {
     uart_puts(UART_ID, b);
 }
 
+// Z80 clock SM state, kept at file scope so the generator can be re-applied
+// after Z80NEO.INI is parsed (Z80_KHZ / Z80_DUTY) without a rebuild.
+static PIO  clock_pio   = pio1;
+static uint clock_sm    = 2;
+static uint clock_off   = 0;
+static bool clock_ready = false;
+
+// Configure (or reconfigure) the Z80 clock generator on GPIO_PWM_SIG.
+static void z80_clock_apply(void) {
+    if (clock_ready)
+        pio_sm_set_enabled(clock_pio, clock_sm, false);
+    // PIO clock generator — clean 50% duty at any frequency.
+    gpio_set_drive_strength(GPIO_PWM_SIG, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_slew_rate(GPIO_PWM_SIG, GPIO_SLEW_RATE_FAST);
+    gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PIO1);  // Z80 clock pin → PIO1
+    // On RP2350B each PIO instance can only address 32 pins, either 0-31 or
+    // 16-47.  Select the upper window when the clock pin is >= 32; this must
+    // happen before pio_add_program/pio_sm_init (pio_sm_set_config does not set
+    // the GPIO base for you), otherwise the SET base wraps and drives pin 0.
+    pio_set_gpio_base(clock_pio, (GPIO_PWM_SIG >= 32) ? 16 : 0);
+    if (!clock_ready) {
+        clock_off = pio_add_program(clock_pio, &z80clock_program);
+        clock_ready = true;
+    }
+    z80clock_program_init(clock_pio, clock_sm, clock_off, CPU_SPEED, CPU_DUTY, GPIO_PWM_SIG);
+    log_cpu_clock();
+}
+
 // ===========================================================================
 // main()
 // ===========================================================================
@@ -148,20 +176,7 @@ int main(void) {
     uart_puts(UART_ID, "Boot init\r\n");
     uart_puts(UART_ID, "Configure CPU clock\r\n");
 
-    // PIO clock generator — clean 50% duty at any frequency
-    gpio_set_drive_strength(GPIO_PWM_SIG, GPIO_DRIVE_STRENGTH_12MA);
-    gpio_set_slew_rate(GPIO_PWM_SIG, GPIO_SLEW_RATE_FAST);
-    gpio_set_function(GPIO_PWM_SIG, GPIO_FUNC_PIO1);  // Z80 clock pin → PIO1
-    PIO clock_pio = pio1;
-    uint clock_sm = 2;
-    // On RP2350B each PIO instance can only address 32 pins, either 0-31 or
-    // 16-47.  Select the upper window when the clock pin is >= 32; this must
-    // happen before pio_add_program/pio_sm_init (pio_sm_set_config does not set
-    // the GPIO base for you), otherwise the SET base wraps and drives pin 0.
-    pio_set_gpio_base(clock_pio, (GPIO_PWM_SIG >= 32) ? 16 : 0);
-    uint clock_off = pio_add_program(clock_pio, &z80clock_program);
-    z80clock_program_init(clock_pio, clock_sm, clock_off, CPU_SPEED, CPU_DUTY, GPIO_PWM_SIG);
-    log_cpu_clock();
+    z80_clock_apply();
     uart_puts(UART_ID, "Initialize SD card\r\n");
 
     // SD card config
@@ -259,6 +274,11 @@ int main(void) {
     // UART1_FORMAT).  uart1_init() ran before the INI was parsed, so re-tune it
     // here; the native uart1term and CP/M both use this line afterwards.
     uart1_configure(UART1_BAUD, UART1_DATA_BITS, UART1_STOP_BITS, UART1_PARITY);
+
+    // Apply the Z80 clock read from Z80NEO.INI (Z80_KHZ / Z80_DUTY).  The clock
+    // ran at the compile-time default until here; the Z80 is still held in reset
+    // so re-configuring the generator now is safe.
+    z80_clock_apply();
 
     clear_screen();
 

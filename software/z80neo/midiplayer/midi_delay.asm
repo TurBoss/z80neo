@@ -86,12 +86,56 @@ mlp_check:
     jr      z, mlp_loop
     in      a, ($80)
     cp      'q'
-    ret     z
+    jr      z, mlp_stop
     cp      'Q'
-    ret     z
+    jr      z, mlp_stop
     cp      27
-    ret     z
+    jr      z, mlp_stop
     jr      mlp_loop
+
+; ---------------------------------------------------------------------------
+; Manual stop: send a MIDI panic so the synth does not leave notes hanging.
+; All Sound Off (CC120), All Notes Off (CC123) and Reset All Controllers
+; (CC121), value 0, on every one of the 16 channels.
+; ---------------------------------------------------------------------------
+mlp_stop:
+    call    mlp_panic
+    ret
+
+mlp_panic:
+    ld      c, $B0                  ; control change, channel 1
+mlp_pan_next:
+    ld      b, 3                    ; three controllers
+    ld      hl, mlp_pan_ctrl
+mlp_pan_cc:
+    ld      a, c
+    call    mlp_tx_byte
+    ld      a, (hl)
+    call    mlp_tx_byte
+    xor     a
+    call    mlp_tx_byte
+    inc     hl
+    djnz    mlp_pan_cc
+    inc     c
+    ld      a, c
+    cp      $C0                     ; past channel 16?
+    jr      nz, mlp_pan_next
+    ret
+
+mlp_pan_ctrl:
+    db      120, 123, 121
+
+; Send one byte, waiting for UART1 TX-ready first (per-byte flow control).
+; Preserves A (the data byte), B, C and HL.
+mlp_tx_byte:
+    push    af
+mlp_tx_wait:
+    in      a, ($91)
+    and     $02
+    jr      z, mlp_tx_wait
+    pop     af
+    out     ($90), a
+    ret
 
 _midi_delay_ms:
     ld      hl, 2

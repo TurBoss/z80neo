@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <pico/stdlib.h>
+
 #include "ff.h"
 #include "fileio.h"
 
@@ -19,16 +21,17 @@
 
 // The Z80 replay loop costs a roughly fixed amount per record (instruction
 // fetch + port access with WAIT) that is not part of the musical timeline.
-// Every event sharing one tick is coalesced into a single record, so the Z80
-// waits once per tick and then forwards the whole tick's raw MIDI bytes from a
-// tight copy loop.  The cost is modelled as a fixed part per record plus a
-// per-byte part; subtract it from the record's delay, carrying any shortfall
-// forward so dense runs are compensated by the next gap.  Both values are in
-// tenths of a millisecond so the fractional part does not drift.  They are the
-// calibration knobs: if playback is slow, raise them; if it runs fast, lower
-// them.  Overridable from Z80NEO.INI as MIDI_GROUP_X10 / MIDI_BYTE_X10.
-uint32_t midi_credit_group_x10 = 30u;   // fixed Z80 cost per record
-uint32_t midi_credit_byte_x10  = 12u;   // Z80 cost per forwarded byte
+// Rather than model that cost with fixed constants, the firmware schedules each
+// record against an absolute playback clock (the RP2350 microsecond timer) and
+// recomputes the delay from that clock on every record.  The Z80's replay cost
+// is therefore measured (it shows up as elapsed time before the next record is
+// requested) and absorbed, so a long song cannot drift no matter how the Z80's
+// wait loop is calibrated.  These two values are an optional extra trim in
+// tenths of a millisecond (subtracted from the delay, so raising them plays
+// faster); the defaults are 0 and normally need no tuning.  Overridable from
+// Z80NEO.INI as MIDI_GROUP_X10 / MIDI_BYTE_X10.
+uint32_t midi_credit_group_x10 = 0u;    // extra trim per record (tenths of ms)
+uint32_t midi_credit_byte_x10  = 0u;    // extra trim per forwarded byte
 
 // Largest number of raw MIDI bytes in one record.  A tick with more messages
 // is split across several records at the same tick (the extras get delay 0).
@@ -55,15 +58,14 @@ static uint32_t m_size;
 static mtrack_t m_trk[MIDI_MAX_TRACKS];
 static uint8_t  m_ntrk;
 static bool     m_open;
-static bool     m_smpte;
-static uint16_t m_division;
+static bool     m_ppqn;         // tempo meta events retime ticks
 static uint32_t m_tempo_us;     // microseconds per quarter note
-static uint32_t m_us_per_tick;
-static uint32_t m_global_tick;
-static uint32_t m_hold_ms;      // delay carried over a >65535 ms gap
-static uint32_t m_us_frac;      // sub-millisecond remainder carried forward
-static uint32_t m_frac_x10;     // sub-ms delay carried forward (tenths of ms)
-static uint32_t m_deficit_x10;  // uncompensated Z80 replay overhead (tenths)
+static uint32_t m_us_num;       // microseconds-per-tick numerator
+static uint32_t m_us_den;       // microseconds-per-tick denominator (never 0)
+static uint32_t m_global_tick;  // tick the pending events are scheduled from
+static uint64_t m_base_us;      // absolute time (us) that m_global_tick is due
+static uint64_t m_tick_rem;     // sub-us numerator carried between ticks
+static bool     m_started;      // m_base_us has been anchored to the timer
 static uint8_t  m_grp[3 + MIDI_GROUP_MAX];  // delay lo, delay hi, n, raw MIDI bytes
 static uint16_t m_grp_len;      // bytes valid in m_grp
 static uint16_t m_grp_pos;      // next byte to hand to the Z80
@@ -226,15 +228,33 @@ static int8_t m_best_track(uint32_t *tick) {
     return best;
 }
 
+// Exact microseconds from tick `from` to tick `to`, carrying the sub-us
+// remainder in *rem_out.  m_us_num/m_us_den express us-per-tick as a rational
+// so a tempo that does not divide evenly cannot drift over a long song.  The
+// caller commits *rem_out only once the tick is consumed, so a record that is
+// re-scheduled (see the long-gap split below) does not advance it twice.
+static uint64_t m_delta_us(uint32_t from, uint32_t to, uint64_t *rem_out) {
+    uint64_t numer = (uint64_t)(to - from) * (uint64_t)m_us_num + m_tick_rem;
+    *rem_out = numer % m_us_den;
+    return numer / m_us_den;
+}
+
 // Build one grouped record: delay, a raw MIDI byte count, then the raw bytes of
 // every channel message sharing the earliest pending tick.  Tempo and end-of-
 // track events are consumed for their timing only (count 0 records).  A tick
 // needing more than MIDI_GROUP_MAX bytes is split; the extra records get delay
 // 0 because m_global_tick is already at that tick.
+//
+// The record's absolute due time is tracked in microseconds on the RP2350
+// timer.  The delay handed to the Z80 is `due - now`, recomputed on every
+// record, so the Z80's replay cost and any wait-loop error are absorbed rather
+// than accumulating.  A gap longer than the 16-bit millisecond delay field is
+// split into delay-only records without consuming the event, so its bytes are
+// only released when the tick is actually due.
 static void m_produce_group(void) {
-    uint32_t bt, ms;
-    uint64_t dus;
+    uint32_t bt;
     uint16_t used = 0;
+    uint64_t due, now, rem, new_rem = 0;
 
     int8_t best = m_best_track(&bt);
     if (best < 0) {
@@ -246,17 +266,23 @@ static void m_produce_group(void) {
         return;
     }
 
-    dus = (uint64_t)(bt - m_global_tick) * m_us_per_tick + m_us_frac;
-    m_global_tick = bt;
-
-    ms = (uint32_t)(dus / 1000u);
-    m_us_frac = (uint32_t)(dus % 1000u);   // no cumulative drift
-    ms += m_hold_ms;
-    m_hold_ms = 0;
-    if (ms > 65535u) {
-        m_hold_ms = ms - 65535u;
-        ms = 65535u;
+    if (!m_started) {
+        m_started = true;
+        m_base_us = time_us_64();              // anchor tick 0 to playback start
     }
+    due = m_base_us + m_delta_us(m_global_tick, bt, &new_rem);
+
+    now = time_us_64();
+    if (due > now && due - now > 65535000ULL) {
+        m_grp[0] = 0xFF;                       // delay-only: 65535 ms
+        m_grp[1] = 0xFF;
+        m_grp[2] = 0;
+        m_grp_len = 3;
+        m_grp_pos = 0;
+        return;                                // event stays pending
+    }
+
+    m_global_tick = bt;                        // the tick now being collected
 
     // Collect every event at this tick.  A channel message that will not fit is
     // left pending; since m_global_tick is already bt, the next record's delay
@@ -282,36 +308,34 @@ static void m_produce_group(void) {
             m_tempo_us = ((uint32_t)t->tempo[0] << 16) |
                          ((uint32_t)t->tempo[1] << 8) |
                          (uint32_t)t->tempo[2];
-            if (!m_smpte && m_division)
-                m_us_per_tick = m_tempo_us / m_division;
+            if (m_ppqn)
+                m_us_num = m_tempo_us;         // denominator is the tick division
         }
         m_read_event(t);
     }
 
-    // Credit the Z80 replay overhead (fixed per record + per forwarded byte)
-    // against the musical delay, carrying any shortfall forward so dense runs
-    // are paid back later.  Work in tenths of a millisecond so the fractional
-    // remainder does not accumulate drift over a long song.
+    // Commit the tick and hold the record until it is due.  The optional trim
+    // (tenths of a millisecond) biases the whole stream faster; 0 by default.
+    m_tick_rem = new_rem;
+    now = time_us_64();
+    rem = due > now ? due - now : 0;
     {
-        uint32_t due = ms * 10u + m_frac_x10;
-        uint32_t credit = m_deficit_x10 + midi_credit_group_x10 +
-                          (uint32_t)used * midi_credit_byte_x10;
-        if (due >= credit) {
-            due -= credit;
-            m_deficit_x10 = 0;
-        } else {
-            m_deficit_x10 = credit - due;
-            due = 0;
-        }
-        ms = due / 10u;
-        m_frac_x10 = due % 10u;                // carry sub-ms remainder forward
+        uint64_t trim_us = ((uint64_t)midi_credit_group_x10 +
+                            (uint64_t)used * midi_credit_byte_x10) * 100ULL;
+        rem = rem > trim_us ? rem - trim_us : 0;
     }
+
+    uint32_t ms = (uint32_t)(rem / 1000ULL);
+    if (ms > 65535u)
+        ms = 65535u;
 
     m_grp[0] = (uint8_t)ms;
     m_grp[1] = (uint8_t)(ms >> 8);
     m_grp[2] = (uint8_t)used;                  // 0 = delay-only record
     m_grp_len = (uint16_t)(3 + used);
     m_grp_pos = 0;
+
+    m_base_us = due;
 }
 
 bool midi_is_open(void) {
@@ -397,24 +421,31 @@ bool midi_open(const char *name) {
         return false;
     }
 
-    m_smpte = 0;
+    m_ppqn = 0;
     m_tempo_us = 500000u;
     m_global_tick = 0;
-    m_hold_ms = 0;
-    m_us_frac = 0;
-    m_frac_x10 = 0;
-    m_deficit_x10 = 0;
+    m_base_us = 0;
+    m_tick_rem = 0;
+    m_started = false;
     m_grp_pos = m_grp_len = 0;                 // force a produce on first read
     if (div & 0x8000) {
         int16_t f = (int16_t)(div >> 8);
         uint8_t tpf = (uint8_t)(div & 0xFF);
         if (f < 0) f = (int16_t)(-f);
-        m_smpte = 1;
-        m_us_per_tick = (f && tpf) ? (1000000u / ((uint32_t)f * tpf)) : 5000u;
-        m_division = 0;
+        if (f && tpf) {
+            m_us_num = 1000000u;
+            m_us_den = (uint32_t)f * (uint32_t)tpf;
+        } else {
+            m_us_num = 5000u;
+            m_us_den = 1u;
+        }
+    } else if (div) {
+        m_ppqn = 1;
+        m_us_num = m_tempo_us;
+        m_us_den = div;
     } else {
-        m_division = div;
-        m_us_per_tick = m_division ? (m_tempo_us / m_division) : 5208u;
+        m_us_num = 5208u;                      // malformed division: 120 bpm-ish
+        m_us_den = 1u;
     }
 
     for (uint8_t i = 0; i < m_ntrk; i++)
@@ -435,9 +466,8 @@ void midi_close(void) {
         m_open = false;
     }
     m_ntrk = 0;
-    m_us_frac = 0;
-    m_frac_x10 = 0;
-    m_deficit_x10 = 0;
+    m_tick_rem = 0;
+    m_started = false;
     m_grp_pos = m_grp_len = 0;
 }
 
