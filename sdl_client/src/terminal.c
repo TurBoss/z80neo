@@ -46,7 +46,9 @@ struct Terminal {
 	int state;
 	uint8_t start_char;
 	int nparams;
-	uint8_t params[16];
+	int params[16];
+
+	uint8_t vt52_row, vt52_start;
 
 	uint8_t gfx_buf[TERM_GFX_WIDTH * TERM_GFX_HEIGHT];
 	bool gfx_active;
@@ -56,8 +58,9 @@ struct Terminal {
 	int gfx_index;
 	uint8_t gfx_params[9];
 
-	uint8_t out[TERM_OUT_MAX];
+	uint8_t *out;
 	size_t out_len;
+	size_t out_cap;
 	unsigned bell_count;
 };
 
@@ -80,9 +83,18 @@ static const uint32_t cp437[128] = {
 };
 
 static void out_append(Terminal *t, const void *data, size_t len) {
-	const uint8_t *p = data;
-	while (len-- && t->out_len < TERM_OUT_MAX)
-		t->out[t->out_len++] = *p++;
+	if (t->out_len + len > t->out_cap) {
+		size_t cap = t->out_cap ? t->out_cap : TERM_OUT_MAX;
+		while (cap < t->out_len + len)
+			cap *= 2;
+		uint8_t *grown = realloc(t->out, cap);
+		if (!grown)
+			return;
+		t->out = grown;
+		t->out_cap = cap;
+	}
+	memcpy(t->out + t->out_len, data, len);
+	t->out_len += len;
 }
 
 static void send_str(Terminal *t, const char *s) {
@@ -270,6 +282,8 @@ static void reset_terminal(Terminal *t) {
 	for (int i = 0; i < t->cols; i += 8)
 		t->tabs[i] = true;
 	t->state = TS_NORMAL;
+	t->vt52_row = 0;
+	t->vt52_start = 0;
 	t->gfx_active = false;
 	t->gfx_fg = 15;
 	t->gfx_bg = 0;
@@ -430,7 +444,7 @@ static void process_text(Terminal *t, uint8_t c) {
 	}
 }
 
-static void sgr(Terminal *t, int nparams, uint8_t *params) {
+static void sgr(Terminal *t, int nparams, int *params) {
 	for (int i = 0; i < nparams; i++) {
 		int p = params[i];
 		if (p == 0) {
@@ -476,7 +490,7 @@ static void sgr(Terminal *t, int nparams, uint8_t *params) {
 }
 
 static void csi_dispatch(Terminal *t, uint8_t start_char, uint8_t final_char,
-						 int nparams, uint8_t *params) {
+						 int nparams, int *params) {
 	if (final_char == 'l' || final_char == 'h') {
 		bool on = final_char == 'h';
 		if (start_char == '?') {
@@ -680,10 +694,10 @@ static void feed_vt102(Terminal *t, uint8_t c) {
 				t->tabs[t->cx] = true;
 			break;
 		case 'J':
-			csi_dispatch(t, 0, 'J', 1, (uint8_t[]){0});
+			csi_dispatch(t, 0, 'J', 1, (int[]){0});
 			break;
 		case 'K':
-			csi_dispatch(t, 0, 'K', 1, (uint8_t[]){0});
+			csi_dispatch(t, 0, 'K', 1, (int[]){0});
 			break;
 		case 'D':
 			index_down(t);
@@ -716,7 +730,7 @@ static void feed_vt102(Terminal *t, uint8_t c) {
 	case TS_READPARAM:
 		if (c >= '0' && c <= '9') {
 			t->params[t->nparams - 1] =
-				(uint8_t)(t->params[t->nparams - 1] * 10 + (c - '0'));
+				t->params[t->nparams - 1] * 10 + (c - '0');
 			t->state = TS_READPARAM;
 		} else if (c == ';') {
 			t->nparams++;
@@ -775,9 +789,6 @@ static void feed_vt102(Terminal *t, uint8_t c) {
 }
 
 static void feed_vt52(Terminal *t, uint8_t c) {
-	static uint8_t row;
-	static uint8_t start;
-
 	switch (t->state) {
 	case TS_NORMAL:
 		if (c == 27) {
@@ -826,8 +837,8 @@ static void feed_vt52(Terminal *t, uint8_t c) {
 			scroll_region(t, t->cy, t->rows - 1, 1);
 			break;
 		case 'Y':
-			start = c;
-			row = 0;
+			t->vt52_start = c;
+			t->vt52_row = 0;
 			t->state = TS_READPARAM;
 			break;
 		case 'Z':
@@ -835,7 +846,7 @@ static void feed_vt52(Terminal *t, uint8_t c) {
 			break;
 		case 'b':
 		case 'c':
-			start = c;
+			t->vt52_start = c;
 			t->state = TS_READPARAM;
 			break;
 		case 'j':
@@ -863,17 +874,17 @@ static void feed_vt52(Terminal *t, uint8_t c) {
 		break;
 
 	case TS_READPARAM:
-		if (start == 'Y') {
-			if (row == 0) {
-				row = c;
+		if (t->vt52_start == 'Y') {
+			if (t->vt52_row == 0) {
+				t->vt52_row = c;
 			} else {
-				if (row >= 32 && c >= 32)
-					move_cursor(t, row - 32, c - 32);
+				if (t->vt52_row >= 32 && c >= 32)
+					move_cursor(t, t->vt52_row - 32, c - 32);
 				t->state = TS_NORMAL;
 			}
-		} else if (start == 'b' && c >= 32) {
+		} else if (t->vt52_start == 'b' && c >= 32) {
 			t->pen.fg = (c - 32) & 15;
-		} else if (start == 'c' && c >= 32) {
+		} else if (t->vt52_start == 'c' && c >= 32) {
 			t->pen.bg = (c - 32) & 15;
 		}
 		break;
@@ -899,6 +910,7 @@ Terminal *terminal_create(int cols, int rows) {
 void terminal_destroy(Terminal *t) {
 	if (!t)
 		return;
+	free(t->out);
 	free(t->cells);
 	free(t);
 }

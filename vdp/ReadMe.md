@@ -42,7 +42,7 @@ The builds use the **system** pico-sdk, not a bundled submodule:
   * `PICO_STACK_SIZE=0xC00` — the 2 K default is marginal for tinyusb + PicoVGA.
 
 ## Keyboard
-* Default: **PS/2 keyboard** on **GP10 = DATA**, **GP11 = CLOCK**
+* Default: **PS/2 keyboard** on **GP11 = DATA**, **GP10 = CLOCK**
   (`PS2_KEYBOARD=ON` in `CMakeLists.txt`/`src/pins.h`). The USB host controller
   is **never started** — only the USB keyboard host is disabled, so the native
   USB port stays available as a CDC device (default `USB port mode` becomes

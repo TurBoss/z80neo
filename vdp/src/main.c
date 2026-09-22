@@ -172,7 +172,7 @@ int main()
   // initialize USB (needed for keyboard)
   {
     const tusb_rhport_init_t dev_init = { .role = TUSB_ROLE_DEVICE, .speed = TUSB_SPEED_FULL };
-#ifndef PS2_KEYBOARD
+#if defined(USB_HOST_PIO) || !defined(PS2_KEYBOARD)
     const tusb_rhport_init_t host_init = { .role = TUSB_ROLE_HOST, .speed = TUSB_SPEED_FULL };
 #endif
 

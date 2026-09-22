@@ -48,10 +48,8 @@ int serial_open(const char *path, int baud) {
 	}
 
 	int fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
-	if (fd < 0) {
-		fprintf(stderr, "cannot open %s: %s\n", path, strerror(errno));
+	if (fd < 0)
 		return -1;
-	}
 
 	struct termios tio;
 	if (tcgetattr(fd, &tio) != 0) {

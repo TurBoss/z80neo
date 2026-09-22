@@ -368,11 +368,11 @@ void framebuf_scroll_region(uint8_t start, uint8_t end, int8_t n, uint8_t fg, ui
     {
       if( config_get_keyboard_scroll_lock() && (keyboard_get_led_status() & KEYBOARD_LED_SCROLLLOCK)!=0 )
         {
-          size_t n = keyboard_num_keypress();
+          size_t kp = keyboard_num_keypress();
           while( (keyboard_get_led_status() & KEYBOARD_LED_SCROLLLOCK)!=0  )
             { 
               wait(10); 
-              if( keyboard_num_keypress()>n ) { sound_play_tone(880, 50, config_get_audible_bell_volume(), false); n=keyboard_num_keypress(); }
+              if( keyboard_num_keypress()>kp ) { sound_play_tone(880, 50, config_get_audible_bell_volume(), false); kp=keyboard_num_keypress(); }
             }
         }
 

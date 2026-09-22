@@ -23,6 +23,8 @@
 
 #include "display.h"
 #include "memory.h"
+#include "fileio.h"
+#include "midi.h"
 #include "i2c_ee.h"
 #include "cpm_disk.h"
 #include "fuzix_disk.h"
@@ -142,6 +144,7 @@ uint8_t  UART1_PARITY    = UART_PARITY_NONE;
 // a read.  Code 0xFF means "not one of the standard rates".
 static const uint32_t uart1_baud_codes[] = {
     115200, 57600, 38400, 19200, 9600, 4800, 2400, 1200, 600, 300,
+    31250,   // code 10: MIDI rate (the Z80 MIDI player selects this)
 };
 #define UART1_BAUD_CODE_COUNT (sizeof(uart1_baud_codes) / sizeof(uart1_baud_codes[0]))
 
@@ -334,6 +337,14 @@ uint8_t io_read_port(uint8_t port) {
         return serial_status_2;
     case SERIAL_CFG_BAUD: return uart1_baud_code(UART1_BAUD);
     case SERIAL_CFG_FMT:  return uart1_fmt_byte();
+    case FILE_CMD:        return fileio_status_read();
+    case FILE_NAME:       return fileio_name_read();
+    case FILE_DATA:       return fileio_data_read();
+    case FILE_ARG0:
+    case FILE_ARG0 + 1:
+    case FILE_ARG0 + 2:
+    case FILE_ARG0 + 3:
+        return fileio_arg_read((uint8_t)(port - FILE_ARG0));
     case 0xF0: return mmu_page[0];
     case 0xF1: return mmu_page[1];
     case 0xF2: return mmu_page[2];
@@ -373,6 +384,15 @@ void io_write_port(uint8_t port, uint8_t data) {
         uart1_configure(UART1_BAUD, db, sb, par);
         break;
     }
+    case FILE_CMD:  fileio_cmd_write(data); break;
+    case FILE_NAME: fileio_name_write(data); break;
+    case FILE_RST:  fileio_name_reset(); break;
+    case FILE_ARG0:
+    case FILE_ARG0 + 1:
+    case FILE_ARG0 + 2:
+    case FILE_ARG0 + 3:
+        fileio_arg_write((uint8_t)(port - FILE_ARG0), data);
+        break;
     case 0xF0: mmu_page[0] = data; break;
     case 0xF1: mmu_page[1] = data; break;
     case 0xF2: mmu_page[2] = data; break;
@@ -691,6 +711,14 @@ static void ini_apply_named(char *line) {
         char pc = (UART1_PARITY == UART_PARITY_EVEN) ? 'E'
                   : (UART1_PARITY == UART_PARITY_ODD) ? 'O' : 'N';
         print_line(0, "U1 FMT: %u%c%u", UART1_DATA_BITS, pc, UART1_STOP_BITS);
+    } else if (ini_key_is(key, "MIDI_GROUP_X10")) {
+        long g = atol(v);
+        if (g >= 0 && g <= 1000) midi_credit_group_x10 = (uint32_t)g;
+        print_line(0, "MD GRP: %lu", (unsigned long)midi_credit_group_x10);
+    } else if (ini_key_is(key, "MIDI_BYTE_X10")) {
+        long b = atol(v);
+        if (b >= 0 && b <= 1000) midi_credit_byte_x10 = (uint32_t)b;
+        print_line(0, "MD BYT: %lu", (unsigned long)midi_credit_byte_x10);
     } else {
         return; // unknown key: ignore
     }

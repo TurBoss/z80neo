@@ -19,8 +19,6 @@ static const unsigned char *glyph_for(uint32_t cp) {
 		else
 			hi = mid - 1;
 	}
-	if (lo < FONT8X16_MAP_LEN && font8x16_map[lo].cp == cp)
-		return font8x16_bitmap + font8x16_map[lo].glyph * FONT8X16_H;
 	return font8x16_bitmap + '?' * FONT8X16_H;
 }
 static void render_gfx(const Terminal *t, uint32_t *pixels, int cols,

@@ -34,7 +34,7 @@ __sfr __at 0x92 UART1_CFG_BAUD; // read: baud code (0 = 115200)
 __sfr __at 0x93 UART1_CFG_FMT;  // read: format byte (0 = 8N1)
 
 static const char *const baud_names[] = {
-	"115200", "57600", "38400", "19200", "9600", "4800", "2400", "1200", "600", "300"
+	"115200", "57600", "38400", "19200", "9600", "4800", "2400", "1200", "600", "300", "31250"
 };
 #define BAUD_CODE_COUNT (sizeof(baud_names) / sizeof(baud_names[0]))
 

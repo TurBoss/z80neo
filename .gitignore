@@ -28,3 +28,4 @@ sdl_client/build/
 *.pyc
 software/OLD/
 firmware/debug/
+vdp/build2350-usb/

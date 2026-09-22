@@ -13,7 +13,7 @@
  * current settings (the Z80NEO.INI defaults) are left alone and shown.
  *
  *   TTERM [-b BAUD] [-f FMT] [-?]
- *     -b 19200        baud: 115200 57600 38400 19200 9600 4800 2400 1200 600 300
+ *     -b 19200        baud: 115200 57600 38400 19200 9600 4800 2400 1200 600 300 31250
  *     -f 8N1          data bits 5..8, parity N/E/O, stop bits 1/2
  *     -?              show help
  *   A bare number is taken as the baud, a bare dP s (e.g. 7E1) as the format.
@@ -39,10 +39,10 @@ __sfr __at 0x93 UART1_CFG_FMT;  // write: format byte; read: current format
 #define PAR_ODD  2
 
 static const unsigned long baud_codes[] = {
-	115200, 57600, 38400, 19200, 9600, 4800, 2400, 1200, 600, 300
+	115200, 57600, 38400, 19200, 9600, 4800, 2400, 1200, 600, 300, 31250
 };
 static const char *const baud_names[] = {
-	"115200", "57600", "38400", "19200", "9600", "4800", "2400", "1200", "600", "300"
+	"115200", "57600", "38400", "19200", "9600", "4800", "2400", "1200", "600", "300", "31250"
 };
 #define BAUD_CODE_COUNT (sizeof(baud_codes) / sizeof(baud_codes[0]))
 
@@ -151,7 +151,7 @@ static char *next_tok(char **p, char *end)
 static void usage(void)
 {
 	con_puts("\r\nTTERM [-b BAUD] [-f FMT] [-?]\r\n"
-	         "  -b  baud: 115200 57600 38400 19200 9600 4800 2400 1200 600 300\r\n"
+	         "  -b  baud: 115200 57600 38400 19200 9600 4800 2400 1200 600 300 31250\r\n"
 	         "  -f  line format, e.g. 8N1 or 7E2 (data 5-8, parity N/E/O, stop 1-2)\r\n"
 	         "  -?  this help\r\n"
 	         "  bare \"19200\" or \"8N1\" also accepted.  Ctrl-] exits.\r\n\r\n");

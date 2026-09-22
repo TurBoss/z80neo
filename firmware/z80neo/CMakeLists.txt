@@ -8,6 +8,8 @@ add_executable(z80neo
  src/display.c
  src/screensaver.c
  src/memory.c
+ src/fileio.c
+ src/midi.c
  src/i2c_ee.c
  src/cpm_disk.c
  src/fuzix_disk.c

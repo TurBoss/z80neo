@@ -91,8 +91,7 @@ static void csi_tilde(Terminal *t, int n) {
 	terminal_send(t, buf, (size_t)len);
 }
 
-static void paste_clipboard(Terminal *t) {
-	char *text = SDL_GetClipboardText();
+static void paste_text(Terminal *t, char *text) {
 	if (!text)
 		return;
 	for (const char *p = text; *p; p++) {
@@ -106,19 +105,12 @@ static void paste_clipboard(Terminal *t) {
 	SDL_free(text);
 }
 
+static void paste_clipboard(Terminal *t) {
+	paste_text(t, SDL_GetClipboardText());
+}
+
 static void paste_primary(Terminal *t) {
-	char *text = SDL_GetPrimarySelectionText();
-	if (!text)
-		return;
-	for (const char *p = text; *p; p++) {
-		uint8_t b = (uint8_t)*p;
-		if (b == '\r')
-			continue;
-		if (b == '\n')
-			b = '\r';
-		terminal_send(t, &b, 1);
-	}
-	SDL_free(text);
+	paste_text(t, SDL_GetPrimarySelectionText());
 }
 
 static void handle_key(Terminal *t, const SDL_KeyboardEvent *ev) {
@@ -397,8 +389,11 @@ int main(int argc, char **argv) {
 		terminal_feed(term, (const uint8_t *)"\033[?2l", 5);
 
 	int serial_fd = serial_open(device, baud);
-	if (serial_fd < 0)
+	bool serial_waiting = false;
+	if (serial_fd < 0) {
+		serial_waiting = true;
 		fprintf(stderr, "waiting for %s...\n", device);
+	}
 
 	if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
 		fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
@@ -502,14 +497,25 @@ int main(int argc, char **argv) {
 		} else if (SDL_GetTicks() - last_reconnect > 1000) {
 			serial_fd = serial_open(device, baud);
 			last_reconnect = SDL_GetTicks();
+			if (serial_fd >= 0) {
+				serial_waiting = false;
+				fprintf(stderr, "connected to %s\n", device);
+			} else if (!serial_waiting) {
+				serial_waiting = true;
+				fprintf(stderr, "waiting for %s...\n", device);
+			}
 		}
 
 		size_t out_len;
 		const uint8_t *out = terminal_output(term, &out_len);
-		if (out_len > 0) {
-			if (serial_fd >= 0)
-				serial_write(serial_fd, out, out_len);
-			terminal_output_clear(term);
+		if (out_len > 0 && serial_fd >= 0) {
+			if (serial_write(serial_fd, out, out_len) < 0) {
+				serial_close(serial_fd);
+				serial_fd = -1;
+				fprintf(stderr, "serial disconnected\n");
+			} else {
+				terminal_output_clear(term);
+			}
 		}
 
 		Uint64 now = SDL_GetTicks();

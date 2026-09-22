@@ -59,7 +59,7 @@ static int scroll_region_start, scroll_region_end;
 static bool cursor_shown = true, origin_mode = false, cursor_eol = false, auto_wrap_mode = true, vt52_mode = false, localecho = false;
 static bool saved_eol = false, saved_origin_mode = false, insert_mode = false;
 static bool petscii_lower_case_charset = true;
-static uint8_t saved_attr, saved_fg, saved_bg, saved_charset_G0, saved_charset_G1, *charset, charset_G0, charset_G1, tabs[255];
+static uint8_t saved_attr, saved_fg, saved_bg, saved_charset_G0, saved_charset_G1, *charset, charset_G0, charset_G1, tabs[256];
 
 
 static uint8_t INFLASHFUN get_charset(char c)
@@ -534,7 +534,7 @@ static void INFLASHFUN terminal_process_command(char start_char, char final_char
       int bottom_limit = origin_mode ? scroll_region_end   : framebuf_get_nrows()-1;
       int n = MAX(1, params[0]);
       show_cursor(false);
-      while( n-- ) framebuf_scroll_region(top_limit, bottom_limit, final_char=='S' ? n : -n, color_fg, color_bg);
+      for(int i=0; i<n; i++) framebuf_scroll_region(top_limit, bottom_limit, final_char=='S' ? 1 : -1, color_fg, color_bg);
       cur_attr = framebuf_get_attr(cursor_col, cursor_row);
       show_cursor(cursor_shown);
     }
@@ -544,7 +544,7 @@ static void INFLASHFUN terminal_process_command(char start_char, char final_char
       if( p==0 )
         tabs[cursor_col] = false;
       else if( p==3 )
-        memset(tabs, 0, framebuf_get_ncols(-1));
+        memset(tabs, 0, sizeof(tabs));
     }
   else if( final_char=='m' )
     {
@@ -822,9 +822,9 @@ void INFLASHFUN terminal_receive_char_vt102(char c)
           case 'c': terminal_reset(); break;                           // reset
           case '7': terminal_process_command(0, 's', 0, NULL); break;  // save cursor position
           case '8': terminal_process_command(0, 'u', 0, NULL); break;  // restore cursor position
-          case 'H': tabs[cursor_col] = true; break;                    // set tab
-          case 'J': terminal_process_command(0, 'J', 0, NULL); break;  // clear to end of screen
-          case 'K': terminal_process_command(0, 'K', 0, NULL); break;  // clear to end of row
+          case 'H': if( cursor_col < (int) sizeof(tabs) ) tabs[cursor_col] = true; break;  // set tab
+          case 'J': terminal_process_command(0, 'J', 1, (uint8_t[]){0}); break;  // clear to end of screen
+          case 'K': terminal_process_command(0, 'K', 1, (uint8_t[]){0}); break;  // clear to end of row
           case 'D': move_cursor_wrap(cursor_row+1, cursor_col); break; // cursor down
           case 'E': move_cursor_wrap(cursor_row+1, 0); break;          // cursor down and to first column
           case 'I': move_cursor_wrap(cursor_row-1, 0); break;          // cursor up and to furst column

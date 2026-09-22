@@ -16,9 +16,9 @@
 #define USB_HOST_DM_PIN 10
 #endif
 
-// PS/2 keyboard (DATA=GP10, CLOCK=GP11) when PS2_KEYBOARD is set.
-#define PIN_PS2_DATA    10
-#define PIN_PS2_CLOCK   11
+// PS/2 keyboard (DATA=GP11, CLOCK=GP10) when PS2_KEYBOARD is set.
+#define PIN_PS2_DATA    11
+#define PIN_PS2_CLOCK   10
 #define PIN_DEFAULTS    22
 #define PIN_LED         25
 #define PIN_HDMI_DETECT 28
