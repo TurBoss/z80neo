@@ -15,6 +15,7 @@ add_executable(z80neo
  src/fuzix_disk.c
  src/hardfault.c
  src/z80bus_pio.c
+ src/bootlogo.c
  src/main.c
     )
 

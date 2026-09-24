@@ -6,6 +6,8 @@
 // file, one directory scan, no writes.
 
 #include "fileio.h"
+#include "cpm_disk.h"
+#include "fuzix_disk.h"
 #include "midi.h"
 
 #include <string.h>
@@ -14,6 +16,12 @@
 #include "ff.h"
 
 #define FILEIO_BUF_SIZE 512
+
+// This FatFS build exposes AM_DIR/AM_ARC but keeps the volume-label bit
+// internal, so define it here to skip that entry in a directory listing.
+#ifndef AM_VOL
+#define AM_VOL 0x08
+#endif
 
 static FATFS   fio_fs;
 static FIL     fio_fil;
@@ -36,6 +44,7 @@ static char     fio_name[FF_LFN_BUF + 1];
 static uint16_t fio_name_len;
 static uint16_t fio_name_rd;
 static bool     fio_name_avail;
+static bool     fio_name_is_dir;   // current DIRNEXT entry is a directory
 
 static uint8_t  fio_arg[4];
 
@@ -109,6 +118,7 @@ uint8_t fileio_status_read(void) {
     if (fio_err)           s |= FILE_ST_ERR;
     if (fio_open)          s |= FILE_ST_OPEN;
     if (fio_name_avail)    s |= FILE_ST_NAME;
+    if (fio_name_avail && fio_name_is_dir) s |= FILE_ST_DIR;
     if (fio_name_len >= FF_LFN_BUF) s |= FILE_ST_NAMEFULL;
     return s;
 }
@@ -142,6 +152,7 @@ void fileio_name_reset(void) {
     fio_name_rd = 0;
     fio_name[0] = '\0';
     fio_name_avail = false;
+    fio_name_is_dir = false;
 }
 
 void fileio_arg_write(uint8_t index, uint8_t data) {
@@ -170,6 +181,28 @@ void fileio_cmd_write(uint8_t cmd) {
         fio_name[fio_name_len] = '\0';
         fio_midi = midi_open(fio_name);
         if (!fio_midi) fio_err = true;
+        break;
+
+    case FILE_REMOUNT_CPM:
+        // `fio_fs` and `cpm_fs` share the same logical SD volume, so mounting
+        // ours (any file/dir access) displaces the CP/M disk layer's mount and
+        // invalidates its open image handles.  Drop our cached mount and re-open
+        // the emulated disk images so disk I/O works again once the program that
+        // borrowed the volume (the CP/M MIDI player) is done with it.
+        fio_close_file();
+        fio_close_dir();
+        fio_mounted = false;
+        cpm_disk_init();
+        break;
+
+    case FILE_REMOUNT_FUZIX:
+        // Same story for the Fuzix raw block device: a Fuzix program that used
+        // the file API must hand the volume back by re-opening FUZIX.IMG, or
+        // the kernel's handle (fz_file) can go stale and filesystem I/O fails.
+        fio_close_file();
+        fio_close_dir();
+        fio_mounted = false;
+        fuzix_disk_init();
         break;
 
     case FILE_OPEN: {
@@ -246,12 +279,15 @@ void fileio_cmd_write(uint8_t cmd) {
                 fio_eof = true;
                 break;
             }
-            if (fio_fno.fattrib & AM_DIR) continue;
+            // Directories are returned too (FILE_ST_DIR tells them apart) so a
+            // loader can walk a tree; only the volume label is skipped.
+            if (fio_fno.fattrib & AM_VOL) continue;
             strncpy(fio_name, fio_fno.fname, FF_LFN_BUF);
             fio_name[FF_LFN_BUF] = '\0';
             fio_name_len = (uint16_t)strlen(fio_name);
             fio_name_rd = 0;
             fio_name_avail = true;
+            fio_name_is_dir = (fio_fno.fattrib & AM_DIR) != 0;
             fio_eof = false;
             break;
         }

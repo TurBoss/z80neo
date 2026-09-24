@@ -8,13 +8,13 @@
 
 #include "midi.h"
 
-#include <stdlib.h>
 #include <string.h>
 
 #include <pico/stdlib.h>
 
 #include "ff.h"
 #include "fileio.h"
+#include "memory.h"
 
 #define MIDI_MAX_TRACKS 16
 #define MIDI_CHUNK      512
@@ -52,8 +52,18 @@ typedef struct {
     uint8_t  done;
 } mtrack_t;
 
+// The whole-file image is far larger than the system heap: the RP2350 bss
+// already holds the 20 x 16 KB RAM banks, leaving only ~120 KB of heap.  A
+// 100 KB+ file therefore only just fits a fresh heap, and malloc/free of a
+// differently-sized buffer per song leaves non-adjacent free holes, so the
+// next large request fails and pico_malloc panics "Out of memory".  Keep the
+// image in PSRAM instead, above the PSRAM banks, and leave the system heap for
+// the tiny per-frame OLED buffer.  With no PSRAM the parser streams from SD
+// through the per-track buffer (m_img == NULL), which always works.
+#define MIDI_IMG_MAX (2u * 1024u * 1024u)
+
 static FIL      m_fil;
-static uint8_t *m_img;          // whole file, or NULL to stream from SD
+static uint8_t *m_img;          // whole file (PSRAM), or NULL to stream from SD
 static uint32_t m_size;
 static mtrack_t m_trk[MIDI_MAX_TRACKS];
 static uint8_t  m_ntrk;
@@ -355,30 +365,27 @@ bool midi_open(const char *name) {
     if (f_open(&m_fil, name, FA_READ) != FR_OK) return false;
 
     // Prefer a whole-file image: an f_lseek + 512-byte refill on this card can
-    // cost seconds, and even one per track would dominate playback.  Fall back
-    // to the streaming buffer if the file does not fit in the heap.
+    // cost seconds, and even one per track would dominate playback.  The image
+    // lives in PSRAM (see MIDI_IMG_MAX); fall back to the streaming buffer when
+    // there is no PSRAM or the file is too big for the reserved region.
     m_img = NULL;
     m_size = (uint32_t)f_size(&m_fil);
-    if (m_size) {
-        m_img = (uint8_t *)malloc(m_size);
-        if (m_img) {
-            UINT got = 0;
-            if (f_lseek(&m_fil, 0) != FR_OK ||
-                f_read(&m_fil, m_img, m_size, &got) != FR_OK || got != m_size) {
-                free(m_img);
-                m_img = NULL;
-            }
-        }
+    if (m_size && psram_base && m_size <= MIDI_IMG_MAX) {
+        uint8_t *img = psram_base + (PSRAM_BANKS * RAM_SIZE);
+        UINT got = 0;
+        if (f_lseek(&m_fil, 0) == FR_OK &&
+            f_read(&m_fil, img, m_size, &got) == FR_OK && got == m_size)
+            m_img = img;
     }
 
     if (f_lseek(&m_fil, 0) != FR_OK ||
         f_read(&m_fil, h, sizeof h, &br) != FR_OK || br < sizeof h) {
-        if (m_img) { free(m_img); m_img = NULL; }
+        m_img = NULL;
         f_close(&m_fil);
         return false;
     }
     if (memcmp(h, "MThd", 4) != 0) {
-        if (m_img) { free(m_img); m_img = NULL; }
+        m_img = NULL;
         f_close(&m_fil);
         return false;
     }
@@ -389,7 +396,7 @@ bool midi_open(const char *name) {
     (void)nt;
     // Type 2 is independent sequences, which the by-tick merge would scramble.
     if (hlen < 6 || fmt > 1) {
-        if (m_img) { free(m_img); m_img = NULL; }
+        m_img = NULL;
         f_close(&m_fil);
         return false;
     }
@@ -416,7 +423,7 @@ bool midi_open(const char *name) {
         p += 8 + len;
     }
     if (m_ntrk == 0) {
-        if (m_img) { free(m_img); m_img = NULL; }
+        m_img = NULL;
         f_close(&m_fil);
         return false;
     }
@@ -456,11 +463,8 @@ bool midi_open(const char *name) {
 }
 
 void midi_close(void) {
-    if (m_img) {
-        free(m_img);
-        m_img = NULL;
-        m_size = 0;
-    }
+    m_img = NULL;                  // PSRAM, not heap: nothing to free
+    m_size = 0;
     if (m_open) {
         f_close(&m_fil);
         m_open = false;

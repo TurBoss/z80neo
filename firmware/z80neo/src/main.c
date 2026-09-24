@@ -46,6 +46,7 @@
 
 // Boot logo
 #include "logo.h"
+#include "bootlogo.h"
 
 // Project modules
 #include "display.h"
@@ -159,19 +160,30 @@ int main(void) {
 
     uart_status_handler();
 
+    // Wipe any output left by the previous program/OS on the VDP / sdl_client
+    // and force its console back to text mode before the banner.
+    boot_console_reset();
+
     uart_puts(UART_ID, "\r\n");
 
     // Boot banner
     uart_puts(UART_ID, "\r\n");
-    uart_puts(UART_ID, "          @@@@   @@@@                             \r\n");
-    uart_puts(UART_ID, "         @    @ @   @@                            \r\n");
-    uart_puts(UART_ID, "  @@@@@@ @    @ @  @ @ @@@@@@@   @@@@@   @@@@@@   \r\n");
-    uart_puts(UART_ID, "     @@   @@@@  @ @  @  @@   @@ @@   @@ @@    @@  \r\n");
-    uart_puts(UART_ID, "    @@   @    @ @@   @  @@   @@ @@@@@@@ @@    @@  \r\n");
-    uart_puts(UART_ID, "   @@    @    @ @    @  @@   @@ @@      @@    @@  \r\n");
-    uart_puts(UART_ID, "  @@@@@@  @@@@   @@@@  @@@   @@  @@@@@@  @@@@@@   \r\n");
-    uart_puts(UART_ID, "                                                  \r\n");
+//    uart_puts(UART_ID, "          @@@@   @@@@                             \r\n");
+//    uart_puts(UART_ID, "         @    @ @   @@                            \r\n");
+//    uart_puts(UART_ID, "  @@@@@@ @    @ @  @ @ @@@@@@@   @@@@@   @@@@@@   \r\n");
+//    uart_puts(UART_ID, "     @@   @@@@  @ @  @  @@   @@ @@   @@ @@    @@  \r\n");
+//    uart_puts(UART_ID, "    @@   @    @ @@   @  @@   @@ @@@@@@@ @@    @@  \r\n");
+//    uart_puts(UART_ID, "   @@    @    @ @    @  @@   @@ @@      @@    @@  \r\n");
+//    uart_puts(UART_ID, "  @@@@@@  @@@@   @@@@  @@@   @@  @@@@@@  @@@@@@   \r\n");
+//    uart_puts(UART_ID, "                                                  \r\n");
+
     uart_puts(UART_ID, "\r\nz80neo - TurBoss 2026\r\n");
+
+    // Graphical boot logo on the VDP / sdl_client (the ESC g bitmap protocol),
+    // drawn on every boot before the SD is read and cleared back to text before
+    // the Z80 / OS starts, so it is the first thing on screen.
+    boot_logo_show();
+
     uart_puts(UART_ID, "\r\n");
     uart_puts(UART_ID, "Boot init\r\n");
     uart_puts(UART_ID, "Configure CPU clock\r\n");

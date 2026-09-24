@@ -33,6 +33,7 @@
 
     PUBLIC  _midi_delay_ms
     PUBLIC  _midi_play
+    PUBLIC  _midi_stopped
 
 ; ---------------------------------------------------------------------------
 ; void midi_play(void);
@@ -45,6 +46,8 @@
 ; event.  Returns on the 0xFF end sentinel or when 'q'/ESC is typed.
 ; ---------------------------------------------------------------------------
 _midi_play:
+    xor     a
+    ld      (_midi_stopped), a      ; clear: 0 = played to the end
 mlp_loop:
     in      a, ($A2)        ; delay lo
     ld      c, a
@@ -100,6 +103,8 @@ mlp_check:
 ; ---------------------------------------------------------------------------
 mlp_stop:
     call    mlp_panic
+    ld      a, 1
+    ld      (_midi_stopped), a      ; 1 = stopped by the user
     ret
 
 mlp_panic:
@@ -161,3 +166,8 @@ inner:
     or      c
     jr      nz, outer
     ret
+
+    SECTION bss_user
+; 0 = midi_play reached the end-of-song sentinel, 1 = stopped by 'q'/ESC.
+_midi_stopped:
+    defs    1

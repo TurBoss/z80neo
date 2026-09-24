@@ -851,6 +851,11 @@ int sd_read_init(void) {
                 sleep_ms(DISPLAY_DELAY_SHORT); clear_screen();
                 continue;
             }
+            // A named "KEY=VALUE"/"KEY:VALUE" line is not a positional flag.
+            // Without this, a positional mis-detection of a named file turns
+            // the leading 'F' of "FUZIX=0" into fuzix_mode=1.
+            if (strchr(buf, '=') || strchr(buf, ':'))
+                continue;
             if (opt == 0) {
                 DEBUG_ADC = buf[0] == '1';
                 print_line(0, "%ADC DEBUG: %01x    ", DEBUG_ADC);
@@ -1002,9 +1007,20 @@ void load_file(bool quiet) {
         // Fuzix links its crt0 at 0x0100; the Z80 reset vector is 0x0000, so
         // plant a jump there.  program_vectors() overwrites it later with the
         // NULL trap.
-        ram[0][0] = 0xC3;   // JP
-        ram[0][1] = 0x00;   // 0x0100
-        ram[0][2] = 0x01;
+        //
+        // Only patch an image that has no reset vector of its own: a page-0
+        // program (linked at 0x0000, e.g. the MIDI player) already starts with
+        // `JP`, and overwriting it with `JP 0x0100` derails the CPU into the
+        // middle of the program — a silent hang that looks like "won't boot".
+        // Fuzix's image is zero-filled below 0x0100, so its first byte is 0x00.
+        if (ram[0][0] != 0xC3) {
+            ram[0][0] = 0xC3;   // JP
+            ram[0][1] = 0x00;   // 0x0100
+            ram[0][2] = 0x01;
+        } else {
+            uart_puts(UART_ID, "FUZIX=on: image has its own 0x0000 vector, "
+                               "left as-is (set FUZIX=0 for page-0 programs)\r\n");
+        }
     }
     reset_release();
 }

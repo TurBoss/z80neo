@@ -11,7 +11,7 @@ ZCC     := $(Z88DK)/bin/zcc
 export PATH   := $(Z88DK)/bin:$(PATH)
 export ZCCCFG := $(Z88DK)/lib/config
 
-DEMOS   := stars cube lissajous wave balls bars
+DEMOS   := stars cube lissajous wave balls bars logo
 BUILD   := build
 
 all: $(addprefix $(BUILD)/,$(addsuffix .ihx,$(DEMOS)))

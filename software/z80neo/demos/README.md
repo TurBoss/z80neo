@@ -33,6 +33,7 @@ Press `q` or `ESC` to quit a demo and return the VDP to text mode.
 | `lissajous.c` | three parametric curves; a key redraws with a new phase |
 | `wave.c`      | two animated sine waves drawn as line segments |
 | `balls.c`     | five bouncing colour blocks |
+| `logo.c`      | animated neon `Z80NEO` wordmark (vector strokes, glow, colour wave) |
 
 `common.h` has a 64-entry fixed-point sine table, an LCG, and a non-blocking
 key check, so the demos use no `<math.h>` and no `rand()`.

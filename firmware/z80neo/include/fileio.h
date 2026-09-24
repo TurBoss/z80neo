@@ -54,9 +54,11 @@
 #define FILE_REWIND    3  // seek to offset 0
 #define FILE_SIZE      4  // result = file size (32-bit LE)
 #define FILE_DIRRESET  5  // scan the directory in the name buffer (empty = root)
-#define FILE_DIRNEXT   6  // load the next filename into the buffer
+#define FILE_DIRNEXT   6  // load the next entry (file or dir) into the buffer
 #define FILE_SEEK      7  // seek to the 32-bit LE offset in FILE_ARG0-3
 #define FILE_OPEN_MIDI 8  // open/parse an SMF and stream records (see midi.h)
+#define FILE_REMOUNT_CPM 9  // hand the SD volume back to the CP/M disk layer
+#define FILE_REMOUNT_FUZIX 10 // hand the SD volume back to the Fuzix block device
 
 // Status bits returned by reading FILE_CMD.
 #define FILE_ST_READY   0x01  // a data byte is available
@@ -65,6 +67,7 @@
 #define FILE_ST_OPEN    0x08  // a file is open
 #define FILE_ST_NAME    0x10  // FILE_DIRNEXT produced a name
 #define FILE_ST_NAMEFULL 0x20 // filename buffer is full
+#define FILE_ST_DIR     0x40  // the FILE_DIRNEXT name is a directory
 
 // Port handlers (called from memory.c io_read_port / io_write_port).
 uint8_t fileio_status_read(void);

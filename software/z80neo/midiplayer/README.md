@@ -44,14 +44,43 @@ Meta and SysEx events are consumed for their timing only; channel messages
 (note on/off, program, control, pitch bend, aftertouch) are passed through
 verbatim.  Gap delays longer than 65535 ms are split across delay-only records.
 
-The firmware loads the whole file into a heap buffer at open (falling back to a
-per-track streaming buffer if it does not fit), because a random `f_lseek` +
-512-byte refill on this card can cost seconds.
+The firmware loads the whole file into a **PSRAM** buffer at open (falling back
+to a per-track streaming buffer when there is no PSRAM), because a random
+`f_lseek` + 512-byte refill on this card can cost seconds.  The image cannot go
+in the system heap: the RP2350 bss already holds the 20×16 KB RAM banks, so the
+heap is only ~120 KB and a 100 KB+ file would exhaust it (and `pico_malloc`
+panics instead of returning NULL).
 
-The player looks in **`/MIDI`** first and falls back to the card **root** if
-that directory is missing or empty.  `MIDI_DIR` in `midiplayer.c` sets the
-directory; the firmware's `DIR_RESET` scans whatever directory path is in its
-filename buffer.
+The player starts in **`/MIDI`** (falling back to the card **root**) and lets you
+walk the whole tree.  Directories are listed with a trailing `/`; a number opens
+a file or descends into a directory, `..` goes up a level, `n`/`p` page (20
+entries per page, no cap, nothing held in memory), `q` quits, and any other input
+is taken as a filename relative to the current directory (or absolute).  Long
+names up to 127 characters are preserved.  `MIDI_DIR` in `midiplayer.c` sets the
+start directory; the firmware's `DIR_RESET` scans whatever directory path is in
+its filename buffer.
+
+### Playback modes
+
+At the browser prompt, besides picking one file:
+
+| Key | Action |
+|-----|--------|
+| `a` | play every file in the current directory, in order |
+| `A` | same, but loop until stopped |
+| `r` | play every file in the current directory in random order |
+| `R` | random order, loop until stopped |
+
+Notes: all four modes recurse into subdirectories (depth-first; a directory is
+played before its siblings finish, so the whole subtree under the current
+directory is covered).  Random order shuffles each directory independently with
+the same coprime-stride permutation (a global shuffle would need to hold every
+path in memory).  Files that fail to open (not valid SMF) are skipped.  During playback `q`/`ESC` stops;
+a single song ends by itself, and `play all` advances to the next.  The shuffle
+is a memory-free coprime-stride permutation seeded from the keypress timing in
+`read_line()` (this machine has no clock), so the order is varied but not
+cryptographic.  The replay loop reports whether it ended or was stopped
+(`_midi_stopped` in `midi_delay.asm`), which is what lets `play all` continue.
 
 ## Build
 
@@ -118,7 +147,10 @@ the absolute scheduler; the defaults are correct for a clean build.
 - Only the first 16 `MTrk` chunks are merged (`MIDI_MAX_TRACKS`); extra tracks
   are ignored.  SMF type 2 (independent sequences) is rejected, since a
   by-tick merge would scramble it.
-- The menu lists up to `MAXF` (16) files and keeps up to 39 characters per
-  name, so a number selection opens the exact file.  For a directory with more
-  files, type a filename (relative to the directory in use) instead of a number.
-- The Z80 program is ~3.8 KB and must fit in the 16 KB page-0 window.
+- The file menu is a pager/tree browser (`PAGE_LINES` = 20 entries per page):
+  directories show a trailing `/`, a number opens or descends, `..` goes up,
+  `n`/`p` page, `q` quits.  Nothing is held in memory, so any number of entries
+  (and nested subdirectories) can be browsed.  Long names are preserved.
+- The Z80 program is ~5.4 KB and must fit in the 16 KB page-0 window.  `a`/`r`
+  recurse, so the directory walk is depth-first and uses the Z80 stack (top set
+  at `0x3fff`); nesting deeper than ~30 levels would exhaust it.
