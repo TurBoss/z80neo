@@ -53,6 +53,20 @@ A>MIDI [file.mid]
 `MIDI.COM` retunes UART1 to 31250 8N1 itself and **restores the previous
 settings on exit** (it saves ports `0x92`/`0x93` at start).
 
+## Console MIDI monitor
+
+While a song plays the **firmware** clears the console and paints a full-screen
+MIDI monitor: a header with the file name, elapsed / total time, tempo (BPM) and
+track count, then one row per MIDI channel (current note, velocity bar, General
+MIDI instrument name, volume, pan), colour-coded.  `MIDI.COM` does not parse or
+draw for it — the firmware already sees every channel message as it streams the
+file — so playback timing is unaffected, and the bare-metal
+`software/z80neo/midiplayer` gets the identical monitor from the same code.
+Rows are rewritten in place (absolute VT102 cursor positioning, nothing scrolls)
+only when a channel's state changes and are shown at the record's due time, so
+the monitor never runs ahead of the music.  `Z80NEO.INI` `MIDI_PANEL=0` (or
+`OFF`) disables it for a raw, non-VT102 terminal.
+
 ## Ports
 
 | Port | Direction | Meaning |
@@ -106,8 +120,8 @@ the card root or `/MIDI` — since the firmware reads those directly.
 
 - Only the first 16 `MTrk` chunks are merged; type 2 (independent sequences) is
   rejected by the firmware.
-- The console log UI of the old bare-metal build is gone; playback is headless
-  except for the file list.
+- Playback shows the firmware's channel monitor (see above); the Z80 itself only
+  prints the file list and the open/stop lines.
 - The Z80 clock is 128 kHz (`Z80_KHZ` / `CPM` boot); the shared delay loop is
   calibrated for it.  If `CPU_SPEED` or the bus settle times change, retune
   `software/z80neo/midiplayer/midi_delay.asm`.

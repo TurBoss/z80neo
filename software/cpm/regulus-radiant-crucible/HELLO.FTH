@@ -1,0 +1,25 @@
+( HELLO.FTH - Regulus Forth "Hello, World!" for the z80neo CP/M 2.2 )
+( )
+( Regulus has no text INCLUDE: source is entered at the `ok` REPL or )
+( interpreted from 1024-byte screen blocks with LOAD / THRU.  On the )
+( z80neo, REGULUS.COM is on drive O: (CPMDISK14.IMG).  Session: )
+( )
+(   A>O: )
+(   O>REGULUS )
+(   ok : HOWDY ." Hello, World!" CR ; )
+(   ok HOWDY )
+(   Hello, World! )
+(   ok EMIT-COM HELLO.COM HOWDY )
+(   Emitted COM. )
+(   ok BYE )
+(   O>HELLO )
+(   Hello, World! )
+( )
+( EMIT-COM bakes the entry word into a standalone .COM that carries its )
+( own embedded Z80 micro-VM, so HELLO.COM runs without Regulus. )
+( )
+( Forth source: )
+: HOWDY  ." Hello, World!" CR ;
+
+HOWDY
+EMIT-COM HELLO.COM HOWDY

@@ -52,6 +52,8 @@ __sfr __at 0xA3 FILE_RST;
 #define FCMD_DIRNEXT 6
 #define FCMD_OPEN_MIDI 8
 #define FCMD_REMOUNT_CPM 9
+#define FCMD_DIRPUSH 11
+#define FCMD_DIRPOP 12
 
 #define FST_EOF 0x02
 #define FST_ERR 0x04
@@ -483,34 +485,60 @@ static uint16_t g_played;
  * recursion (each frame's `path` holds the child path handed to the next
  * level), so g_dir is left untouched and the browser stays where it was.
  * Each directory keeps the existing coprime-stride shuffle when random_order.
- * Returns 1 when the user stopped playback. */
+ * Returns 1 when the user stopped playback.
+ *
+ * Ordered mode walks the directory sequentially: one scan per directory, so N
+ * entries cost O(N).  FILE_DIRPUSH/DIRPOP keep the parent scan live across a
+ * recursive descent, and the firmware no longer closes a directory scan when a
+ * MIDI file is opened, so the walk is not restarted for every entry.  (The old
+ * nth_entry() re-scan was O(N^2) and hung on the card's multi-thousand-entry
+ * directories.)  Random mode still needs random access and keeps nth_entry(). */
 static uint8_t play_tree(const char *dir, uint8_t random_order) {
 	char nm[NAME_MAX];
 	char path[NAME_MAX + 16];
-	uint16_t count = dir_count(dir);
-	uint16_t i, idx;
+	uint16_t count, i, idx;
 	uint32_t start = 0, step = 1;
-	uint8_t d;
+	uint8_t d, stop;
 
-	if (count == 0)
+	if (!random_order) {
+		if (!dir_start(dir, 0))
+			return 0;
+		while (dir_next(nm, sizeof nm, &d)) {
+			path_join(path, sizeof path, dir, nm);
+			if (d) {
+				FILE_CMD = FCMD_DIRPUSH;
+				stop = play_tree(path, 0);
+				FILE_CMD = FCMD_DIRPOP;
+				if (stop)
+					return 1;
+			} else {
+				g_played++;
+				if (play_file(path) == PLAY_STOP)
+					return 1;
+			}
+		}
 		return 0;
-	if (random_order) {
-		g_rng = (uint16_t)(g_rng ^ g_wait_ticks ^ count ^ 0x9E37u);
-		if (g_rng == 0)
-			g_rng = 1;
-		step = pick_stride(count);
-		start = (uint32_t)(rng_next() % count);
 	}
 
+	count = dir_count(dir);
+	if (count == 0)
+		return 0;
+	g_rng = (uint16_t)(g_rng ^ g_wait_ticks ^ count ^ 0x9E37u);
+	if (g_rng == 0)
+		g_rng = 1;
+	step = pick_stride(count);
+	start = (uint32_t)(rng_next() % count);
+
 	for (i = 0; i < count; i++) {
-		idx = random_order
-				  ? (uint16_t)((start + (uint32_t)i * step) % count)
-				  : i;
+		idx = (uint16_t)((start + (uint32_t)i * step) % count);
 		if (!nth_entry(dir, (uint16_t)(idx + 1), nm, sizeof nm, &d))
 			continue;
 		path_join(path, sizeof path, dir, nm);
 		if (d) {
-			if (play_tree(path, random_order))
+			FILE_CMD = FCMD_DIRPUSH;
+			stop = play_tree(path, random_order);
+			FILE_CMD = FCMD_DIRPOP;
+			if (stop)
 				return 1;
 		} else {
 			g_played++;

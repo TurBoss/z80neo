@@ -17,6 +17,13 @@
 
 #define FILEIO_BUF_SIZE 512
 
+// How many nested directory scans can be open at once.  Ordered play recurses
+// into subdirectories and keeps the parent scan live (FILE_DIRPUSH/POP), so a
+// directory with N entries costs O(N) instead of the O(N^2) of re-scanning for
+// every index.  Deeper nesting than this is refused rather than corrupting the
+// parent scan.
+#define FIO_DIR_DEPTH 12
+
 // This FatFS build exposes AM_DIR/AM_ARC but keeps the volume-label bit
 // internal, so define it here to skip that entry in a directory listing.
 #ifndef AM_VOL
@@ -25,12 +32,13 @@
 
 static FATFS   fio_fs;
 static FIL     fio_fil;
-static DIR     fio_dir;
+static DIR     fio_dirs[FIO_DIR_DEPTH];
 static FILINFO fio_fno;
 
 static bool     fio_mounted;
 static bool     fio_open;
-static bool     fio_dir_open;
+static bool     fio_dir_open[FIO_DIR_DEPTH];
+static uint8_t  fio_dir_depth;   // active nesting level: 0 = none, else 1..N
 static bool     fio_err;
 static bool     fio_eof;
 static bool     fio_midi;
@@ -97,11 +105,26 @@ static void fio_close_file(void) {
     fio_reset_stream();
 }
 
+// Close the active (deepest) directory scan only; parent levels stay live.
 static void fio_close_dir(void) {
-    if (fio_dir_open) {
-        f_closedir(&fio_dir);
-        fio_dir_open = false;
+    if (fio_dir_depth) {
+        uint8_t i = (uint8_t)(fio_dir_depth - 1);
+        if (fio_dir_open[i]) {
+            f_closedir(&fio_dirs[i]);
+            fio_dir_open[i] = false;
+        }
     }
+}
+
+// Close every nested directory scan (mount/displace/reset paths).
+static void fio_close_dirs(void) {
+    for (uint8_t i = 0; i < FIO_DIR_DEPTH; i++) {
+        if (fio_dir_open[i]) {
+            f_closedir(&fio_dirs[i]);
+            fio_dir_open[i] = false;
+        }
+    }
+    fio_dir_depth = 0;
 }
 
 uint8_t fileio_status_read(void) {
@@ -175,8 +198,10 @@ void fileio_cmd_write(uint8_t cmd) {
     }
     switch (cmd) {
     case FILE_OPEN_MIDI:
+        // Do not close the directory scan: the ordered tree walk keeps it live
+        // across songs so it advances one entry at a time instead of re-scanning
+        // from the start for every entry.
         fio_close_file();
-        fio_close_dir();
         fio_err = false;
         fio_name[fio_name_len] = '\0';
         fio_midi = midi_open(fio_name);
@@ -190,7 +215,7 @@ void fileio_cmd_write(uint8_t cmd) {
         // the emulated disk images so disk I/O works again once the program that
         // borrowed the volume (the CP/M MIDI player) is done with it.
         fio_close_file();
-        fio_close_dir();
+        fio_close_dirs();
         fio_mounted = false;
         cpm_disk_init();
         break;
@@ -200,7 +225,7 @@ void fileio_cmd_write(uint8_t cmd) {
         // the file API must hand the volume back by re-opening FUZIX.IMG, or
         // the kernel's handle (fz_file) can go stale and filesystem I/O fails.
         fio_close_file();
-        fio_close_dir();
+        fio_close_dirs();
         fio_mounted = false;
         fuzix_disk_init();
         break;
@@ -255,26 +280,52 @@ void fileio_cmd_write(uint8_t cmd) {
         }
         break;
 
+    case FILE_DIRPUSH:
+        // Open a fresh nesting level for a recursive scan.  The parent's DIR
+        // and its position are left untouched.
+        if (fio_dir_depth < FIO_DIR_DEPTH) {
+            fio_dir_depth++;
+            fio_dir_open[fio_dir_depth - 1] = false;
+            fio_err = false;
+        } else {
+            fio_err = true;
+        }
+        break;
+
+    case FILE_DIRPOP:
+        // Close the deepest scan and return to the parent level.
+        fio_close_dir();
+        if (fio_dir_depth > 1)
+            fio_dir_depth--;
+        fio_name_avail = false;
+        break;
+
     case FILE_DIRRESET:
+        if (!fileio_ensure_mount()) break;
+        if (fio_dir_depth == 0)
+            fio_dir_depth = 1;                     // implicit base level
         fio_close_dir();
         fio_name_avail = false;
         fio_err = false;
         fio_eof = false;
-        if (!fileio_ensure_mount()) break;
         // The name buffer holds the directory to scan (empty = root), so a
         // program can list e.g. "/MIDI".
         fio_name[fio_name_len] = '\0';
-        if (f_opendir(&fio_dir, fio_name_len ? fio_name : "/") != FR_OK) {
+        if (f_opendir(&fio_dirs[fio_dir_depth - 1], fio_name_len ? fio_name : "/") != FR_OK) {
             fio_err = true;
             break;
         }
-        fio_dir_open = true;
+        fio_dir_open[fio_dir_depth - 1] = true;
         break;
 
     case FILE_DIRNEXT:
-        if (!fio_dir_open) { fio_err = true; fio_name_avail = false; break; }
+        if (fio_dir_depth == 0 || !fio_dir_open[fio_dir_depth - 1]) {
+            fio_err = true;
+            fio_name_avail = false;
+            break;
+        }
         for (;;) {
-            if (f_readdir(&fio_dir, &fio_fno) != FR_OK || fio_fno.fname[0] == '\0') {
+            if (f_readdir(&fio_dirs[fio_dir_depth - 1], &fio_fno) != FR_OK || fio_fno.fname[0] == '\0') {
                 fio_name_avail = false;
                 fio_eof = true;
                 break;
@@ -304,7 +355,7 @@ void fileio_reset(void) {
         fio_midi = false;
     }
     fio_close_file();
-    fio_close_dir();
+    fio_close_dirs();
     fileio_name_reset();
     fio_mounted = false;
     fio_err = false;

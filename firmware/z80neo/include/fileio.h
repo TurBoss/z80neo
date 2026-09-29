@@ -59,6 +59,8 @@
 #define FILE_OPEN_MIDI 8  // open/parse an SMF and stream records (see midi.h)
 #define FILE_REMOUNT_CPM 9  // hand the SD volume back to the CP/M disk layer
 #define FILE_REMOUNT_FUZIX 10 // hand the SD volume back to the Fuzix block device
+#define FILE_DIRPUSH 11   // open a nested directory scan level (keep parent)
+#define FILE_DIRPOP 12    // close the nested scan and resume the parent level
 
 // Status bits returned by reading FILE_CMD.
 #define FILE_ST_READY   0x01  // a data byte is available

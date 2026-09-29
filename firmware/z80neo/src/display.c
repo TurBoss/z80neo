@@ -375,18 +375,16 @@ typedef enum {
 	PAGE_MEM,
 	PAGE_DISK,
 	PAGE_DIAG,
+	PAGE_SCREENSAVER,
 	PAGE_FILES
 } page_id_t;
 
 static const char *const menu_labels[] = {
 	"System",	   "CPU / Clock", "Bus / Timing", "Memory & Banks",
-	"Disk Drives", "Diagnostics", "Files / Load"};
+	"Disk Drives", "Diagnostics", "Screensaver",  "Files / Load"};
 #define MENU_ITEMS ((int)(sizeof(menu_labels) / sizeof(menu_labels[0])))
 #define MENU_VISIBLE 6
 #define UI_TICK 8
-
-// Idle time on the home logo before the 15-puzzle screensaver starts.
-#define SS_IDLE_TIMEOUT_US (30ULL * 1000 * 1000)
 
 static bool ui_home = true; // idle: show the text logo, not the menu
 static uint64_t ui_idle_since = 0;
@@ -395,6 +393,12 @@ static int ui_page = -1, ui_page_sel = 0;
 static bool ui_arm_clear = false;
 static button_state ui_last_btn = NONE;
 static int ui_file_idx = 1, ui_file_count = 0;
+static int ui_ss_sel = 0; // screensaver page selection (0..3)
+
+// Idle timeout choices offered by the Screensaver page, in seconds.
+static const uint32_t ui_ss_idle_choices[] = {10, 30, 60, 120, 300};
+#define UI_SS_IDLE_N                                                           \
+	((int)(sizeof(ui_ss_idle_choices) / sizeof(ui_ss_idle_choices[0])))
 
 static void ui_z80_pause(void) {
 	reset_hold();
@@ -528,6 +532,22 @@ static void ui_draw_diag(void) {
 	ui_render(l);
 }
 
+static void ui_draw_screensaver(void) {
+	char l[LINES][24];
+	memset(l, 0, sizeof(l));
+	snprintf(l[0], 24, "== SCREENSAVER ==");
+	snprintf(l[1], 24, "%cEnabled   %s", ui_ss_sel == 0 ? '>' : ' ',
+			 screensaver_enabled() ? "ON" : "OFF");
+	snprintf(l[2], 24, "%c Demo     %s", ui_ss_sel == 1 ? '>' : ' ',
+			 screensaver_mode_name(screensaver_mode()));
+	snprintf(l[3], 24, "%c Idle     %lus", ui_ss_sel == 2 ? '>' : ' ',
+			 (unsigned long)screensaver_idle_seconds());
+	snprintf(l[4], 24, "%cPreview now", ui_ss_sel == 3 ? '>' : ' ');
+	snprintf(l[6], 24, "UP/DN OK:change");
+	snprintf(l[7], 24, "CANCEL: menu");
+	ui_render(l);
+}
+
 static void ui_draw_files(void) {
 	char l[LINES][24];
 	memset(l, 0, sizeof(l));
@@ -569,6 +589,9 @@ static void ui_draw_page(void) {
 		break;
 	case PAGE_DIAG:
 		ui_draw_diag();
+		break;
+	case PAGE_SCREENSAVER:
+		ui_draw_screensaver();
 		break;
 	case PAGE_FILES:
 		ui_draw_files();
@@ -680,9 +703,46 @@ static void ui_diag_action(button_state b) {
 	ui_draw_diag();
 }
 
+static void ui_ss_action(button_state b) {
+	if (b == UP) {
+		ui_ss_sel = (ui_ss_sel + 3) % 4;
+	} else if (b == DOWN) {
+		ui_ss_sel = (ui_ss_sel + 1) % 4;
+	} else if (b == OK) {
+		switch (ui_ss_sel) {
+		case 0:
+			screensaver_set_enabled(!screensaver_enabled());
+			break;
+		case 1:
+			screensaver_set_mode((screensaver_mode() + 1) %
+								 screensaver_mode_count());
+			break;
+		case 2: {
+			int idx = 0;
+			uint32_t cur = screensaver_idle_seconds();
+			for (int i = 0; i < UI_SS_IDLE_N; i++)
+				if (ui_ss_idle_choices[i] == cur)
+					idx = i;
+			screensaver_set_idle_seconds(
+				ui_ss_idle_choices[(idx + 1) % UI_SS_IDLE_N]);
+			break;
+		}
+		case 3:
+			// Manual preview: hand the screen to the saver; the next button
+			// press stops it and returns to the logo.
+			ui_page = -1;
+			ui_idle_since = time_us_64();
+			screensaver_begin(z80neo);
+			return;
+		}
+	}
+	ui_draw_screensaver();
+}
+
 static void ui_open_page(int page) {
 	ui_page = page;
 	ui_page_sel = 0;
+	ui_ss_sel = 0;
 	ui_arm_clear = false;
 	if (page == PAGE_FILES)
 		ui_files_scan();
@@ -702,6 +762,9 @@ static void ui_page_action(button_state b) {
 		return;
 	case PAGE_DIAG:
 		ui_diag_action(b);
+		return;
+	case PAGE_SCREENSAVER:
+		ui_ss_action(b);
 		return;
 	case PAGE_FILES:
 		if (b == UP)
@@ -857,8 +920,8 @@ void display_loop(void) {
 		if (buttons != NONE || !ui_home || !system_up)
 			ui_idle_since = now;
 		if (ui_home && system_up && buttons_enabled && !tbmon &&
-			!screensaver_active() &&
-			(now - ui_idle_since) >= SS_IDLE_TIMEOUT_US)
+			screensaver_enabled() && !screensaver_active() &&
+			(now - ui_idle_since) >= screensaver_idle_us())
 			screensaver_begin(z80neo);
 	}
 }

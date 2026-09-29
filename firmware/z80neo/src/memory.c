@@ -28,6 +28,7 @@
 #include "i2c_ee.h"
 #include "cpm_disk.h"
 #include "fuzix_disk.h"
+#include "screensaver.h"
 
 // ===========================================================================
 // Globals
@@ -473,6 +474,28 @@ char read_uart_char(void) {
     return 0;
 }
 
+// Firmware-side console writes.  These enqueue into the same TX ring the Z80
+// console port (0x80) feeds, so firmware UI and Z80 output stay ordered, and
+// the main-loop drain runs echo_track_tx() on every byte regardless of source.
+// On a full ring the byte is dropped: the MIDI panel throttles itself well
+// below the UART drain rate, so this is only a safety valve.
+void console_putc(uint8_t c) {
+    if (tx_count >= UART_TX_BUF_SIZE) return;
+    tx_buffer[tx_head++] = c;
+    if (tx_head >= UART_TX_BUF_SIZE) tx_head = 0;
+    tx_count++;
+    serial_status_1 = (tx_count < UART_TX_BUF_SIZE) ? (serial_status_1 | 0x02)
+                                                    : (serial_status_1 & ~0x02);
+}
+
+void console_puts(const char *s) {
+    while (*s) console_putc((uint8_t)*s++);
+}
+
+void console_write(const uint8_t *s, uint16_t n) {
+    while (n--) console_putc(*s++);
+}
+
 void uart_status_handler(void) {
     while (tx_count > 0 && uart_is_writable(UART_ID)) {
         uart_putc(UART_ID, tx_buffer[tx_tail]);
@@ -725,6 +748,10 @@ static void ini_apply_named(char *line) {
         long b = atol(v);
         if (b >= 0 && b <= 1000) midi_credit_byte_x10 = (uint32_t)b;
         print_line(0, "MD BYT: %lu", (unsigned long)midi_credit_byte_x10);
+    } else if (ini_key_is(key, "MIDI_PANEL")) {
+        midi_panel_set_enabled(v[0] == '1' || v[0] == 'O' || v[0] == 'o' ||
+                               v[0] == 'Y' || v[0] == 'y');
+        print_line(0, "MIDI PNL: %s", midi_panel_enabled() ? "ON" : "OFF");
     } else if (ini_key_is(key, "Z80_KHZ")) {
         long khz = atol(v);
         if (khz >= 32 && khz <= 1000) CPU_SPEED = (float)khz * 1000.0f;
@@ -733,6 +760,23 @@ static void ini_apply_named(char *line) {
         long pct = atol(v);
         if (pct >= 5 && pct <= 95) CPU_DUTY = (float)pct / 100.0f;
         print_line(0, "Z80 DTY: %lu%%", (unsigned long)(CPU_DUTY * 100.0f + 0.5f));
+    } else if (ini_key_is(key, "SCREENSAVER")) {
+        screensaver_set_enabled(v[0] == '1' || v[0] == 'O' || v[0] == 'o' ||
+                                v[0] == 'Y' || v[0] == 'y');
+        print_line(0, "SS: %s", screensaver_enabled() ? "ON" : "OFF");
+    } else if (ini_key_is(key, "SS_MODE")) {
+        int m = atoi(v);
+        bool numeric = (v[0] >= '0' && v[0] <= '9');
+        if (!numeric) {
+            for (int i = 0; i < screensaver_mode_count(); i++)
+                if (ini_key_is(v, screensaver_mode_name(i))) { m = i; break; }
+        }
+        screensaver_set_mode(m);
+        print_line(0, "SS MODE: %s", screensaver_mode_name(screensaver_mode()));
+    } else if (ini_key_is(key, "SS_IDLE")) {
+        long s = atol(v);
+        if (s >= 5 && s <= 3600) screensaver_set_idle_seconds((uint32_t)s);
+        print_line(0, "SS IDLE: %lus", (unsigned long)screensaver_idle_seconds());
     } else {
         return; // unknown key: ignore
     }

@@ -40,4 +40,18 @@ extern uint32_t midi_credit_byte_x10;
 // the 0xFF sentinel record.
 uint8_t midi_read_byte(void);
 
+// ---------------------------------------------------------------------------
+// Console channel monitor.
+//
+// While a file is open the firmware keeps a per-channel "current note" table
+// (16 rows, updated from the same messages it streams) and paints it on the
+// console with VT102 cursor positioning.  The Z80 never draws or parses for the
+// panel, so playback timing is untouched; the panel is refreshed from the main
+// loop by midi_panel_poll().  Enabled by default; Z80NEO.INI MIDI_PANEL=0 (or
+// MIDI_PANEL=OFF) turns it off.
+// ---------------------------------------------------------------------------
+void midi_panel_poll(void);
+void midi_panel_set_enabled(bool on);
+bool midi_panel_enabled(void);
+
 #endif

@@ -264,6 +264,13 @@ void uart_rx_poll(void);
 void echo_track_tx(uint8_t c);
 void uart_status_handler(void);
 
+// Console output for firmware-side UI (e.g. the MIDI channel monitor).  Bytes
+// go into the same TX ring the Z80 console port uses, so ordering is preserved
+// and the main-loop drain applies the local-echo tracking to them as well.
+void console_putc(uint8_t c);
+void console_puts(const char *s);
+void console_write(const uint8_t *s, uint16_t n);
+
 // MMU accessors (used by PIO bus handler)
 uint8_t mmu_read(uint16_t addr);
 void mmu_write(uint16_t addr, uint8_t data);

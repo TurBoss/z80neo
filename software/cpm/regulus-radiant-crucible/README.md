@@ -194,4 +194,39 @@ sha256sum REGULUS.COM
 # Expected: c60aea1111deb5492ae91ce0d0b018db6b3b756c70a5b2c74745f26f2cc3471c
 ```
 
+---
+
+## VII. First Light: a Hello World on the z80neo
+
+`REGULUS.COM` has no text `INCLUDE`; it reads source from the `ok` REPL or
+from 1024-byte screen blocks via `LOAD` / `THRU`.  On the z80neo CP/M the
+binary lives on drive **O:** (`CPMDISK14.IMG`).  Boot CP/M, run it, and enter a
+colon definition:
+
+```text
+A>O:
+O>REGULUS
+
+=== MAGE'S GUILD PSYCHONAUTICS ===
+Play is love; attention is sustenance; the garden remembers.
+Type MAN for manual. Type WORDS for dictionary.
+
+ok : HOWDY ." Hello, World!" CR ;
+ok HOWDY
+Hello, World!
+ok EMIT-COM HELLO.COM HOWDY
+Emitted COM.
+ok BYE
+O>HELLO
+Hello, World!
+O>
+```
+
+`EMIT-COM <file.com> <word>` bakes the entry word into a standalone `.COM`
+that carries its own embedded Z80 micro-VM, so `HELLO.COM` needs no Regulus at
+run time.  `EMIT-CRYSTAL HELLO.CRY HOWDY` writes portable bytecode instead, and
+`EMIT-VM VM.COM` writes the 2.8 KB universal runner that executes such a
+crystal.  The same lines are in [`HELLO.FTH`](HELLO.FTH); `TYPE HELLO.FTH`
+prints them from inside Regulus.
+
 May this small machine serve your journey into the boundless stacks of the cosmos.

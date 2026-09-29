@@ -82,6 +82,26 @@ is a memory-free coprime-stride permutation seeded from the keypress timing in
 cryptographic.  The replay loop reports whether it ended or was stopped
 (`_midi_stopped` in `midi_delay.asm`), which is what lets `play all` continue.
 
+### Console MIDI monitor
+
+While a song plays the **firmware** clears the console and paints a full-screen
+MIDI monitor (`src/midi.c`): a header with the file name, elapsed / total time,
+tempo (BPM) and track count, then one row per MIDI channel showing its current
+note, velocity bar, General MIDI instrument name, volume and pan, colour-coded
+per channel.  The total time is pre-scanned at open when the whole file is in
+PSRAM.
+
+The Z80 does not parse or draw for it — the firmware already sees every channel
+message as it streams the file — so playback timing is unaffected.  Rows are
+rewritten in place (absolute VT102 cursor positioning, nothing scrolls) only
+when a channel's state changes, throttled so the monitor uses a fraction of the
+115200 baud console, and events are shown at the record's due time so the
+monitor never runs ahead of the music.  It works the same for `MIDI.COM` under
+CP/M because it lives in the shared firmware.
+
+`Z80NEO.INI` `MIDI_PANEL=0` (or `OFF`) disables it for a raw, non-VT102 terminal.
+No player rebuild is needed to toggle it — re-flash the firmware.
+
 ## Build
 
 ```sh

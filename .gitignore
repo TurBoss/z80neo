@@ -29,3 +29,6 @@ sdl_client/build/
 software/OLD/
 firmware/debug/
 vdp/build2350-usb/
+vdp/VoidVDP/build2350-usb/
+vdp/VoidVDP/build2350/
+vdp/VoidVDP/build/

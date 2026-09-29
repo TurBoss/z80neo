@@ -53,6 +53,7 @@
 #include "cpm_disk.h"
 #include "fuzix_disk.h"
 #include "memory.h"
+#include "midi.h"
 #include "i2c_ee.h"
 #include "z80bus_pio.h"
 
@@ -516,5 +517,8 @@ int main(void) {
 
         // Second UART: flush TX and drain RX (Z80 ports 0x90/0x91).
         uart1_poll();
+
+        // MIDI channel monitor: repaint changed rows at a throttled rate.
+        midi_panel_poll();
     }
 }
