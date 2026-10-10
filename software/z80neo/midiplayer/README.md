@@ -2,7 +2,7 @@
 
 A bare-metal `+z80neo` program that plays a Standard MIDI File (`.mid`) out
 **UART1 on ports `0x90` (data) / `0x91` (status)** at the MIDI rate — **31250
-baud 8N1**.  UART1 is the firmware's second UART (GPIO36 = TX, GPIO37 = RX);
+baud 8N1**.  UART1 is the firmware's second UART (GPIO38 = TX, GPIO39 = RX);
 wire TX to a MIDI DIN socket's driver (or a 3.3 V synth's MIDI-in through the
 usual current-loop/opto arrangement).
 

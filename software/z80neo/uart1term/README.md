@@ -2,7 +2,7 @@
 
 A small bare-metal Z80 program (`+z80neo` target) that bridges the board's
 console to the second UART the firmware exposes.  It lets you talk to a device
-wired to **UART1 (GPIO36 = TX, GPIO37 = RX)** from the normal console terminal
+wired to **UART1 (GPIO38 = TX, GPIO39 = RX)** from the normal console terminal
 (the VDP or the PC `sdl_client`).
 
 It is a raw bidirectional bridge:

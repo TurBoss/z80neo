@@ -22,6 +22,46 @@
 #define PICO_I2C_SDA_PIN 2
 #define PICO_I2C_SCL_PIN 3
 
+// I2C bus recovery: a slave can hold SCL low (stuck mid-transaction) so the
+// controller can never finish a write.  Bit-bang SCL as GPIO to release it,
+// emit a STOP, then bring I2C back up.
+void i2c_bus_recover(void) {
+    gpio_set_function(PICO_I2C_SDA_PIN, GPIO_FUNC_SIO);
+    gpio_set_function(PICO_I2C_SCL_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(PICO_I2C_SDA_PIN, GPIO_IN);
+    gpio_set_dir(PICO_I2C_SCL_PIN, GPIO_OUT);
+    gpio_pull_up(PICO_I2C_SDA_PIN);
+    gpio_pull_up(PICO_I2C_SCL_PIN);
+    for (int i = 0; i < 9; i++) {
+        gpio_put(PICO_I2C_SCL_PIN, 0); busy_wait_us(5);
+        gpio_put(PICO_I2C_SCL_PIN, 1); busy_wait_us(5);
+    }
+    gpio_set_dir(PICO_I2C_SDA_PIN, GPIO_OUT);
+    gpio_put(PICO_I2C_SDA_PIN, 0); busy_wait_us(5);   // STOP: SDA low...
+    gpio_put(PICO_I2C_SCL_PIN, 1); busy_wait_us(5);   // ...SCL high...
+    gpio_put(PICO_I2C_SDA_PIN, 1); busy_wait_us(5);   // ...then SDA high
+    gpio_set_function(PICO_I2C_SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(PICO_I2C_SCL_PIN, GPIO_FUNC_I2C);
+    gpio_pull_up(PICO_I2C_SDA_PIN);
+    gpio_pull_up(PICO_I2C_SCL_PIN);
+    i2c_init(PICO_I2C_INSTANCE, SSD1306_I2C_CLK * 1000);
+}
+
+// Bounded I2C write: never let a stuck/absent SSD1306 hang the boot.  On a
+// timeout, recover the bus, re-init and retry once; only then give up.
+static bool ssd1306_alive = true;
+
+static void ssd1306_i2c_write(const uint8_t *buf, size_t len) {
+    if (!ssd1306_alive) return;
+    // ~9 us/byte at 1 MHz, plus start/addr overhead and a margin.
+    uint32_t to = 3000u + (uint32_t)len * 15u;
+    if (i2c_write_timeout_us(PICO_I2C_INSTANCE, SSD1306_I2C_ADDR, buf, len, false, to) < 0) {
+        i2c_bus_recover();
+        if (i2c_write_timeout_us(PICO_I2C_INSTANCE, SSD1306_I2C_ADDR, buf, len, false, to) < 0)
+            ssd1306_alive = false;
+    }
+}
+
 
 
 void calc_render_area_buflen(struct render_area *area) {
@@ -34,7 +74,7 @@ void SSD1306_send_cmd(uint8_t cmd) {
     // this "data" can be a command or data to follow up a command
     // Co = 1, D/C = 0 => the driver expects a command
     uint8_t display_buf[2] = {0x80, cmd};
-    i2c_write_blocking(PICO_I2C_INSTANCE, SSD1306_I2C_ADDR, display_buf, 2, false);
+    ssd1306_i2c_write(display_buf, 2);
 }
 
 void SSD1306_send_cmd_list(uint8_t *display_buf, int num) {
@@ -55,7 +95,7 @@ void SSD1306_send_buf(uint8_t display_buf[], int buflen) {
     temp_buf[0] = 0x40;
     memcpy(temp_buf+1, display_buf, buflen);
 
-    i2c_write_blocking(PICO_I2C_INSTANCE, SSD1306_I2C_ADDR, temp_buf, buflen + 1, false);
+    ssd1306_i2c_write(temp_buf, buflen + 1);
 
     free(temp_buf);
 }

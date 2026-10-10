@@ -26,6 +26,7 @@
 #include "fileio.h"
 #include "midi.h"
 #include "i2c_ee.h"
+#include "spi_vdp.h"
 #include "cpm_disk.h"
 #include "fuzix_disk.h"
 #include "screensaver.h"
@@ -338,6 +339,7 @@ uint8_t io_read_port(uint8_t port) {
         return serial_status_2;
     case SERIAL_CFG_BAUD: return uart1_baud_code(UART1_BAUD);
     case SERIAL_CFG_FMT:  return uart1_fmt_byte();
+    case 0x95: return vdp_status;   // NullVDP link status (bit0 TX, bit1 RX, bit7 present)
     case FILE_CMD:        return fileio_status_read();
     case FILE_NAME:       return fileio_name_read();
     case FILE_DATA:       return fileio_data_read();
@@ -385,6 +387,7 @@ void io_write_port(uint8_t port, uint8_t data) {
         uart1_configure(UART1_BAUD, db, sb, par);
         break;
     }
+    case 0x94: vdp_console_tx(data); break;   // NullVDP console byte (mirror also used)
     case FILE_CMD:  fileio_cmd_write(data); break;
     case FILE_NAME: fileio_name_write(data); break;
     case FILE_RST:  fileio_name_reset(); break;
@@ -472,6 +475,21 @@ char read_uart_char(void) {
     }
     rx_data_available = false;
     return 0;
+}
+
+// Inject a byte into the console RX ring (keyboard input from the VDP link, or
+// any other source that is not the UART).  Same ring the Z80 reads on port
+// 0x80; oldest byte dropped when full.
+void console_inject_rx(uint8_t c) {
+    if (rx_count >= UART_BUF_SIZE) {
+        rx_read = (rx_read + 1) % UART_BUF_SIZE;
+        rx_count--;
+    }
+    rx_buffer[rx_index] = (char)c;
+    rx_index = (rx_index + 1) % UART_BUF_SIZE;
+    rx_count++;
+    rx_data_available = true;
+    if (fuzix_mode) fuzix_int_raise(FUZIX_IRQ_SERIAL);
 }
 
 // Firmware-side console writes.  These enqueue into the same TX ring the Z80

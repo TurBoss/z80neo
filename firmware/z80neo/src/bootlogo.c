@@ -13,13 +13,39 @@
 #include <pico/stdlib.h>
 
 #include "memory.h"
+#include "spi_vdp.h"
 
 #define LOGO_W   64
 #define LOGO_H   104
 #define LOGO_T   14
 #define LOGO_GAP 16
 #define LOGO_N   6
-#define LOGO_TOP 76
+
+// The wordmark is drawn in the VDP's 640x256 bitmap layer (see
+// doc/vdp_protocol.md).  LOGO_X_OFFSET is a signed nudge: positive moves the
+// logo right, negative left, for displays whose active area is not centred.
+#define LOGO_SCREEN_W 640
+#define LOGO_SCREEN_H 256
+#define LOGO_X_OFFSET 0
+
+// The underline rail sits LOGO_UNDER_GAP below the glyphs.  Glyphs + rail are
+// treated as one block and centred vertically in the layer.
+#define LOGO_UNDER_GAP 14
+#define LOGO_UNDER_H   4
+#define LOGO_BLOCK_H   (LOGO_H + LOGO_UNDER_GAP + LOGO_UNDER_H)
+#define LOGO_TOP       ((LOGO_SCREEN_H - LOGO_BLOCK_H) / 2)
+
+// How long the finished logo stays on screen before the text console returns.
+// The VDP / monitor can take a moment to sync when the board powers up, so a
+// short hold means the splash is already gone by the time the display lights.
+// Raise this if the display is still waking when the logo disappears.
+#define BOOT_LOGO_HOLD_MS 5000
+
+// Draw a 1-pixel frame while the logo is shown, to calibrate the display's
+// active area / horizontal offset.  The z80neo draws the left/right columns;
+// the top/bottom lines lie outside the 256-line layer and are drawn by the
+// display itself (see framebuf_vga.cpp).  Set to 0 to hide the frame.
+#define LOGO_BORDER 0
 
 // Stroke set bits.
 #define SA 0x01
@@ -32,6 +58,8 @@
 
 static void vput(uint8_t c) {
     uart_putc(UART_ID, c);
+    vdp_console_tx(c);       // mirror the boot logo / reset to the NullVDP too
+    vdp_console_flush();
 }
 
 static void vcmd(uint8_t c) {
@@ -156,11 +184,21 @@ void boot_console_reset(void) {
 void boot_logo_show(void) {
     static const char kinds[LOGO_N] = { 'Z', '8', '0', 'N', 'E', 'O' };
     const uint16_t bw = (uint16_t)(LOGO_N * LOGO_W + (LOGO_N - 1) * LOGO_GAP);
-    const uint16_t x0 = (uint16_t)((640 - bw) / 2);
-    const uint16_t by = (uint16_t)(LOGO_TOP + LOGO_H + 14);
+    const int x0i = (LOGO_SCREEN_W - bw) / 2 + LOGO_X_OFFSET;
+    const uint16_t x0 = (uint16_t)(x0i < 0 ? 0 : x0i);
+    const uint16_t by = (uint16_t)(LOGO_TOP + LOGO_H + LOGO_UNDER_GAP);
 
     vcolor(0, 0);
     vbitmap(1);                         // also clears to the bg colour
+
+#if LOGO_BORDER
+    // Left/right 1px frame columns.  The top/bottom lines are drawn by the
+    // display itself, since they lie outside the 256-line graphics layer.
+    vcolor(15, 0);
+    vfill(0, 0, LOGO_BORDER, LOGO_SCREEN_H, 1);
+    vfill(LOGO_SCREEN_W - LOGO_BORDER, 0, LOGO_BORDER, LOGO_SCREEN_H, 1);
+#endif
+
     for (uint8_t i = 0; i < LOGO_N; i++) {
         draw_glyph((uint16_t)(x0 + i * (LOGO_W + LOGO_GAP)), kinds[i], 15);
         sleep_ms(120);
@@ -168,10 +206,10 @@ void boot_logo_show(void) {
 
     // Underline rail, then hold the logo before handing back the text console.
     vcolor(8, 0);
-    vfill(x0, by, bw, 4, 1);
+    vfill(x0, by, bw, LOGO_UNDER_H, 1);
     vcolor(15, 0);
-    vfill((uint16_t)(x0 + bw / 3), by, (uint16_t)(bw / 4), 4, 1);
-    sleep_ms(1200);
+    vfill((uint16_t)(x0 + bw / 3), by, (uint16_t)(bw / 4), LOGO_UNDER_H, 1);
+    sleep_ms(BOOT_LOGO_HOLD_MS);
 
     vbitmap(0);
 }

@@ -52,11 +52,13 @@ extern float CPU_DUTY;
 #define STOP_BITS  1
 #define PARITY     UART_PARITY_NONE
 
-// Second UART (SIO channel B): hardware UART1 on free GPIO36/37, exposed to the
+// Second UART (SIO channel B): hardware UART1 on GPIO38/39, exposed to the
 // Z80 on ports 0x90 (data) / 0x91 (status).  Independent of the console UART0.
+// GPIO38/39 reach UART1 through the AUX function (F11); UART_FUNCSEL_NUM picks
+// it automatically.
 #define UART1_ID      uart1
-#define UART1_TX_PIN  36
-#define UART1_RX_PIN  37
+#define UART1_TX_PIN  38
+#define UART1_RX_PIN  39
 
 // Console baud rate (defined in memory.c).  Defaults to BAUD_RATE and may be
 // overridden by a trailing "BAUD <n>" line in Z80NEO.INI.
@@ -157,6 +159,13 @@ void uart1_configure(uint32_t baud, uint8_t data_bits, uint8_t stop_bits, uint8_
 #define INT_OUT 6
 
 #define ADC_KEYS_INPUT 40   // ADC KEYS
+
+// NullVDP SPI link (Pico = master).  Free GPIO34-37.  (UART1 moved to 38/39.)
+// MISO=34 (B11), MOSI=35 (A11), SCK=36 (N6), CS=37 (D11).
+#define VDP_SPI_MISO_PIN 34
+#define VDP_SPI_MOSI_PIN 35
+#define VDP_SPI_SCK_PIN  36
+#define VDP_SPI_CS_PIN   37
 
 #define PICO_I2C_INSTANCE i2c1
 
@@ -261,6 +270,8 @@ void set_bus_dir(int direction);
 // UART
 char read_uart_char(void);
 void uart_rx_poll(void);
+/* Push a byte (e.g. from the VDP keyboard) into the console RX ring. */
+void console_inject_rx(uint8_t c);
 void echo_track_tx(uint8_t c);
 void uart_status_handler(void);
 

@@ -9,7 +9,7 @@ CP/M console input   ->  UART1 TX (0x90 write)
 UART1 RX (0x90 read) ->  CP/M console output
 ```
 
-It lets you drive a device wired to **UART1 (GPIO36 = TX, GPIO37 = RX)** from
+It lets you drive a device wired to **UART1 (GPIO38 = TX, GPIO39 = RX)** from
 the normal CP/M prompt.
 
 ## Ports
@@ -98,5 +98,5 @@ A>TTERM
   the console intact.
 - The RP2350 pads are 3.3 V. A 5 V TTL or RS-232 device on UART1 needs level
   shifting (RS-232 also needs a transceiver).
-- Jumper EXT2 pin 16 (GPIO36) to pin 17 (GPIO37) for a loopback self-test:
+- Jumper EXT2 pin 18 (GPIO38) to pin 19 (GPIO39) for a loopback self-test:
   every typed character is echoed back once.

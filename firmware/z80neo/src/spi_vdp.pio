@@ -1,0 +1,16 @@
+;
+; spi_vdp.pio - NullVDP SPI master (z80neo side)
+;
+; Full-duplex SPI, CPOL=0 CPHA=0, MSB-first, 16-bit frames.  Based on the
+; pico-examples PIO SPI program.  Autopull/autopush with a 16-bit threshold:
+; one 16-bit TX-FIFO word becomes one {CMD,DATA} frame, and one 16-bit RX-FIFO
+; word is the slave's {STATUS,RDATA} reply.  CS is driven by the CPU (GPIO).
+;
+.program spi_cpha0
+.side_set 1
+
+; - SCK is side-set pin 0
+; - MOSI is OUT pin 0
+; - MISO is IN pin 0
+    out pins, 1 side 0 [1]
+    in pins, 1  side 1 [1]

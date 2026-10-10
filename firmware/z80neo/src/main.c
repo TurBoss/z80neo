@@ -55,10 +55,22 @@
 #include "memory.h"
 #include "midi.h"
 #include "i2c_ee.h"
+#include "spi_vdp.h"
 #include "z80bus_pio.h"
 
 float CPU_SPEED = 128000.0f;   // Z80 clock (PIO generator on GPIO32); INI may override
 float CPU_DUTY  = 0.50f;       // Z80 clock HIGH-time fraction (0.05..0.95)
+
+// Boot log: write to UART0 and mirror the same bytes to the NullVDP, blocking
+// until they are sent, so the whole boot log appears on the VDP from the start.
+static void boot_log(const char *s) {
+    while (*s) {
+        uint8_t c = (uint8_t)*s++;
+        uart_putc(UART_ID, c);
+        vdp_console_tx(c);
+    }
+    vdp_console_flush();
+}
 
 // Print the configured Z80 clock to the boot log (MHz + Hz).
 static void log_cpu_clock(void) {
@@ -69,7 +81,7 @@ static void log_cpu_clock(void) {
              (unsigned long)((hz % 1000000u) / 1000u),
              (unsigned long)hz,
              (unsigned long)(CPU_DUTY * 100.0f + 0.5f));
-    uart_puts(UART_ID, b);
+    boot_log(b);
 }
 
 // Z80 clock SM state, kept at file scope so the generator can be re-applied
@@ -133,8 +145,8 @@ int main(void) {
     bi_decl(bi_2pins_with_func(PICO_I2C_SDA_PIN, PICO_I2C_SCL_PIN, GPIO_FUNC_I2C));
     bi_decl(bi_program_description("z80neo firmware"));
 
-    // I2C_1 SCREEN
-    i2c_init(PICO_I2C_INSTANCE, SSD1306_I2C_CLK * 1000);
+    // I2C_1 SCREEN (recover the bus first in case a slave holds SCL low)
+    i2c_bus_recover();
     gpio_set_function(PICO_I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(PICO_I2C_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(PICO_I2C_SDA_PIN);
@@ -156,8 +168,9 @@ int main(void) {
     // Keep FIFO enabled (default) for hardware buffering —
     // our software TX buffer in uart_status_handler flushes into it safely.
 
-    // Second UART (SIO channel B, Z80 ports 0x90/0x91) on GPIO36/37.
+    // Second UART (SIO channel B, Z80 ports 0x90/0x91) on GPIO38/39.
     uart1_init();
+    spi_vdp_init();
 
     uart_status_handler();
 
@@ -165,32 +178,32 @@ int main(void) {
     // and force its console back to text mode before the banner.
     boot_console_reset();
 
-    uart_puts(UART_ID, "\r\n");
+    boot_log("\r\n");
 
     // Boot banner
-    uart_puts(UART_ID, "\r\n");
-//    uart_puts(UART_ID, "          @@@@   @@@@                             \r\n");
-//    uart_puts(UART_ID, "         @    @ @   @@                            \r\n");
-//    uart_puts(UART_ID, "  @@@@@@ @    @ @  @ @ @@@@@@@   @@@@@   @@@@@@   \r\n");
-//    uart_puts(UART_ID, "     @@   @@@@  @ @  @  @@   @@ @@   @@ @@    @@  \r\n");
-//    uart_puts(UART_ID, "    @@   @    @ @@   @  @@   @@ @@@@@@@ @@    @@  \r\n");
-//    uart_puts(UART_ID, "   @@    @    @ @    @  @@   @@ @@      @@    @@  \r\n");
-//    uart_puts(UART_ID, "  @@@@@@  @@@@   @@@@  @@@   @@  @@@@@@  @@@@@@   \r\n");
-//    uart_puts(UART_ID, "                                                  \r\n");
+    boot_log("\r\n");
+//    boot_log("          @@@@   @@@@                             \r\n");
+//    boot_log("         @    @ @   @@                            \r\n");
+//    boot_log("  @@@@@@ @    @ @  @ @ @@@@@@@   @@@@@   @@@@@@   \r\n");
+//    boot_log("     @@   @@@@  @ @  @  @@   @@ @@   @@ @@    @@  \r\n");
+//    boot_log("    @@   @    @ @@   @  @@   @@ @@@@@@@ @@    @@  \r\n");
+//    boot_log("   @@    @    @ @    @  @@   @@ @@      @@    @@  \r\n");
+//    boot_log("  @@@@@@  @@@@   @@@@  @@@   @@  @@@@@@  @@@@@@   \r\n");
+//    boot_log("                                                  \r\n");
 
-    uart_puts(UART_ID, "\r\nz80neo - TurBoss 2026\r\n");
+    boot_log("\r\nz80neo - TurBoss 2026\r\n");
 
     // Graphical boot logo on the VDP / sdl_client (the ESC g bitmap protocol),
     // drawn on every boot before the SD is read and cleared back to text before
     // the Z80 / OS starts, so it is the first thing on screen.
     boot_logo_show();
 
-    uart_puts(UART_ID, "\r\n");
-    uart_puts(UART_ID, "Boot init\r\n");
-    uart_puts(UART_ID, "Configure CPU clock\r\n");
+    boot_log("\r\n");
+    boot_log("Boot init\r\n");
+    boot_log("Configure CPU clock\r\n");
 
     z80_clock_apply();
-    uart_puts(UART_ID, "Initialize SD card\r\n");
+    boot_log("Initialize SD card\r\n");
 
     // SD card config
     pico_fatfs_spi_config_t fs_config = {
@@ -229,7 +242,7 @@ int main(void) {
     gpio_put(INT_OUT, 1);
 
     // Init ADC keys
-    uart_puts(UART_ID, "Init Keys\r\n");
+    boot_log("Init Keys\r\n");
     adc_init();
     adc_gpio_init(ADC_KEYS_INPUT);
 
@@ -237,7 +250,7 @@ int main(void) {
     i2c_ee_init();
 
     // Init display
-    uart_puts(UART_ID, "Init Display\r\n");
+    boot_log("Init Display\r\n");
     SSD1306_init();
     calc_render_area_buflen(&frame_area);
 
@@ -250,15 +263,12 @@ int main(void) {
 
     // Show logo
     show_logo();
-    sleep_ms(DISPLAY_DELAY_LONG);
-    sleep_ms(DISPLAY_DELAY_LONG);
+    sleep_ms(DISPLAY_DELAY);
 
     // Boot info
     boot_screen();
-    sleep_ms(DISPLAY_DELAY_LONG);
-    sleep_ms(DISPLAY_DELAY_LONG);
-    sleep_ms(DISPLAY_DELAY_LONG);
-    sleep_ms(DISPLAY_DELAY_LONG);
+    sleep_ms(DISPLAY_DELAY);
+    sleep_ms(DISPLAY_DELAY);
 
     // Clear banks
     cur_bank = 0;
@@ -268,10 +278,10 @@ int main(void) {
 
     clear_screen();
 
-    uart_puts(UART_ID, "Read SD Card\r\n");
+    boot_log("Read SD Card\r\n");
     WriteString(buf, 3, 0, "SD READ");
     render(buf, &frame_area);
-    sleep_ms(DISPLAY_DELAY_LONG);
+    sleep_ms(DISPLAY_DELAY_SHORT);
 
     sd_read_init();
 
@@ -295,10 +305,10 @@ int main(void) {
 
     clear_screen();
 
-    uart_puts(UART_ID, "Loading program...\r\n");
+    boot_log("Loading program...\r\n");
     WriteString(buf, 0, 0, "LOAD PROGS");
     render(buf, &frame_area);
-    sleep_ms(DISPLAY_DELAY_LONG);
+    sleep_ms(DISPLAY_DELAY_SHORT);
 
     load_init_progs();
     // load_file() releases the Z80 reset when it finishes.  Re-assert it here
@@ -306,48 +316,48 @@ int main(void) {
     // and ready to service cycles — otherwise it runs freely for ~100ms with a
     // floating data bus and its PC derails before the first real fetch.
     reset_hold();
-    sleep_ms(DISPLAY_DELAY_LONG);
-    uart_puts(UART_ID, "\r\nOk!\r\n");
-    sleep_ms(DISPLAY_DELAY_LONG);
+    sleep_ms(DISPLAY_DELAY_SHORT);
+    boot_log("\r\nOk!\r\n");
+    sleep_ms(DISPLAY_DELAY_SHORT);
 
     clear_screen();
 
     WriteString(buf, 3, 0, "SHOW INFO");
     render(buf, &frame_area);
-    sleep_ms(DISPLAY_DELAY_LONG);
+    sleep_ms(DISPLAY_DELAY_SHORT);
 
     show_info();
 
 #ifdef PSRAM_ENABLE
-    uart_puts(UART_ID, "PSRAM...");
+    boot_log("PSRAM...");
     psram_base = NULL;
     bool ok = psram_is_available();
-    uart_puts(UART_ID, ok ? "OK\r\n" : "NOPE\r\n");
+    boot_log(ok ? "OK\r\n" : "NOPE\r\n");
     if (ok) {
         psram_base = (uint8_t *)(XIP_BASE + 0x1000000);
         for (uint8_t p = MAX_BANKS; p < TOTAL_BANKS; p++)
             clear_bank(p);
-        uart_puts(UART_ID, "PSRAM OK\r\n");
+        boot_log("PSRAM OK\r\n");
     }
 #endif
 
      	if (fuzix_mode) {
-    	    uart_puts(UART_ID, fuzix_disk_init()
+    	    boot_log(fuzix_disk_init()
     	                      ? "Fuzix disk: FUZIX.IMG mounted\r\n"
     	                      : "Fuzix disk: FUZIX.IMG not found\r\n");
     	} else if (cpm_disk_init()) {
     	    char cpm_msg[48];
     	    snprintf(cpm_msg, sizeof(cpm_msg), "CP/M disk: %u drive(s) mounted\r\n",
     	             (unsigned)cpm_disk_count());
-    	    uart_puts(UART_ID, cpm_msg);
+    	    boot_log(cpm_msg);
     	} else {
-    	    uart_puts(UART_ID, "No CP/M disk images found — disk I/O disabled\r\n");
+    	    boot_log("No CP/M disk images found — disk I/O disabled\r\n");
     	}
 
     post_dump();
 
     // Init GPIO bus pins
-    uart_puts(UART_ID, "Init GPIO pins\r\n");
+    boot_log("Init GPIO pins\r\n");
     uint32_t gpio;
     for (gpio = BUS_GPIO_START; gpio <= BUS_GPIO_END; gpio++) {
         bus_mask |= (1 << gpio);
@@ -438,7 +448,7 @@ int main(void) {
     mem_r_op  = 0;
     mem_w_op  = 0;
 
-    uart_puts(UART_ID, "Start Display handler\r\n");
+    boot_log("Start Display handler\r\n");
 
     // Launch display loop on core 1
     multicore_launch_core1(display_loop);
@@ -462,8 +472,65 @@ int main(void) {
     irq_set_enabled(UART_IRQ, false);
     uart_set_irq_enables(UART_ID, false, false);
 
-    uart_puts(UART_ID, "\r\nSystem UP!\a\r\n");
+    boot_log("\r\nSystem UP!\a\r\n");
     sleep_ms(10);
+
+    // SPI (NullVDP) status — printed here so it lands at the end of the boot log
+    // instead of scrolling away under the banner/logo.
+    {
+        char vdpmsg[112];
+        snprintf(vdpmsg, sizeof vdpmsg,
+                 "VDP SPI: SCK=GPIO%d MOSI=GPIO%d MISO=GPIO%d CS=GPIO%d\r\n",
+                 VDP_SPI_SCK_PIN, VDP_SPI_MOSI_PIN, VDP_SPI_MISO_PIN, VDP_SPI_CS_PIN);
+        boot_log(vdpmsg);
+
+        snprintf(vdpmsg, sizeof vdpmsg,
+                 "VDP SPI probe: raw=0x%08X id=0x%02X status=0x%02X "
+                 "(present=%u txrdy=%u rxavail=%u rxovf=%u)\r\n",
+                 (unsigned)vdp_id_raw, (unsigned)(vdp_id_raw & 0xFF),
+                 (unsigned)vdp_status,
+                 (unsigned)((vdp_status >> 7) & 1), (unsigned)(vdp_status & 1),
+                 (unsigned)((vdp_status >> 1) & 1), (unsigned)((vdp_status >> 2) & 1));
+        boot_log(vdpmsg);
+
+        snprintf(vdpmsg, sizeof vdpmsg,
+                 "VDP SPI link: enabled=%u miso=pu%u/pd%u follow=%u (0=none 1=CS 2=SCK 3=MOSI)\r\n",
+                 (unsigned)vdp_enabled, (unsigned)vdp_miso_pu,
+                 (unsigned)vdp_miso_pd, (unsigned)vdp_miso_follows);
+        boot_log(vdpmsg);
+
+        // Slow (~2.5 kHz) ID read: separates a wiring/protocol fault from an
+        // edge-rate / signal-integrity fault.
+        {
+            uint16_t slow = vdp_probe_slow();
+            snprintf(vdpmsg, sizeof vdpmsg,
+                     "VDP SPI slow ID: raw=0x%08X id=0x%02X\r\n",
+                     (unsigned)slow, (unsigned)(slow & 0xFF));
+            boot_log(vdpmsg);
+        }
+
+        // If the link is down, sweep all four SPI pins (works with the
+        // `make ident-program` bitstream loaded) to map the wiring.
+        if (!vdp_enabled) {
+            static const uint32_t idpins[4] = {
+                VDP_SPI_MISO_PIN, VDP_SPI_MOSI_PIN, VDP_SPI_SCK_PIN, VDP_SPI_CS_PIN
+            };
+            static const char *idname[4] = { "MISO", "MOSI", "SCK", "CS" };
+            boot_log("VDP SPI ident (edges/2s):");
+            for (int i = 0; i < 4; i++) {
+                uint32_t e = vdp_probe_pin_edges(idpins[i]);
+                const char *ball = (e == 0)   ? "static"
+                                 : (e <= 2)   ? "N6"
+                                 : (e <= 4)   ? "A11"
+                                 : (e <= 9)   ? "B11"
+                                 :              "D11";
+                snprintf(vdpmsg, sizeof vdpmsg, " %s=GPIO%u:%u(%s)",
+                         idname[i], (unsigned)idpins[i], (unsigned)e, ball);
+                boot_log(vdpmsg);
+            }
+            boot_log("  [N6=SCK A11=MOSI B11=MISO D11=CS]\r\n");
+        }
+    }
 
     z80bus_pio_init((uint32_t)(CPU_SPEED / 1000.0f));
     // PIO SMs start with WAIT released (SET PINS, 1).
@@ -505,6 +572,7 @@ int main(void) {
         if (tx_count > 0 && uart_is_writable(UART_ID)) {
             echo_track_tx(tx_buffer[tx_tail]);
             uart_putc(UART_ID, tx_buffer[tx_tail]);
+            vdp_console_tx(tx_buffer[tx_tail]);   // mirror the console to the NullVDP
             tx_tail = (tx_tail + 1) % UART_TX_BUF_SIZE;
             tx_count--;
             serial_status_1 = (tx_count < UART_TX_BUF_SIZE) ? (serial_status_1 | 0x02) : (serial_status_1 & ~0x02);
@@ -517,6 +585,9 @@ int main(void) {
 
         // Second UART: flush TX and drain RX (Z80 ports 0x90/0x91).
         uart1_poll();
+
+        // NullVDP SPI link: mirror console output, pick up keyboard input.
+        spi_vdp_poll();
 
         // MIDI channel monitor: repaint changed rows at a throttled rate.
         midi_panel_poll();

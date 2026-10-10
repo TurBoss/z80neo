@@ -59,10 +59,11 @@ def add_folder(
     for f in sorted(folder.iterdir()):
         if not f.is_file():
             continue
-        if f.suffix.lower() in skip or not VALID.match(f.name):
+        ext = f.suffix.lower()
+        if ext in skip or not VALID.match(f.name):
             skipped += 1
             continue
-        if include is not None and f.suffix.lower() not in include:
+        if include is not None and ext and ext not in include:
             skipped += 1
             continue
         rc, msg = run(

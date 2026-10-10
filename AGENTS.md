@@ -128,7 +128,7 @@ driver is
 `lissajous`, `wave`, `balls`, `bars`) with a Makefile. Note sccz80 miscompiles
 `a &= 0xff` on a `uint8_t` parameter (writes garbage); avoid that idiom.
 
-The firmware's second UART (UART1 on GPIO36/37, Z80 ports `0x90` data / `0x91`
+The firmware's second UART (UART1 on GPIO38/39, Z80 ports `0x90` data / `0x91`
 status) can be driven from bare-metal C too: `software/z80neo/uart1term/` is a
 console<->UART1 bridge built with the same target (raw port I/O on 0x80/0x81 and
 0x90/0x91). One CP/M equivalent exists as well:
@@ -312,10 +312,21 @@ Windows `tools/CPMTG(English)/CpmtoolsGUI.exe`.
   root); `DIRNEXT` returns every entry including subdirectories, flagged by
   `FILE_ST_DIR` (bit `0x40`) in the command status, so the MIDI players can walk
   the card as a tree (a number opens or descends, `..` goes up). The second UART is
-  hardware **UART1 on the otherwise-free GPIO36 (TX) / GPIO37 (RX)**,
+  hardware **UART1 on the otherwise-free GPIO38 (TX) / GPIO39 (RX)**,
   initialised by `uart1_init()` and polled by `uart1_poll()`; `0x91` mirrors the
   console status bits (bit0 = RX ready, bit1 = TX ready). It is independent of
   the console UART0 and is not wired to the Fuzix serial interrupt.
+  The **NullVDP SPI link** (`src/spi_vdp.c`, polled from the main loop) adds
+  ports `0x94` (write = console byte to the FPGA VDP) and `0x95` (read = link
+  status: bit0 TX ready, bit1 RX available, bit7 present). It is a software
+  bit-banged SPI master (mode 0, 16-bit `{CMD,DATA}`/`{STATUS,RDATA}` frames,
+  MISO/MOSI/SCK/CS = GPIO34/35/36/37) to the Tang Primer 20K NullVDP: every
+  console byte drained from the TX ring is mirrored to it, and keyboard bytes
+  it reports are injected into the console RX ring (`console_inject_rx`, which
+  bypasses the local-echo filter). The link is enabled only if the slave's `ID`
+  register answers `0x4E` (`VDP_ID_VALUE`), so an unwired link (MISO pulled
+  down) stays inert. (`src/spi_vdp.pio` is a not-yet-wired PIO variant; the
+  current master is the C bit-bang.)
 - **Clock / reset** — `src/z80clock.pio` generates the Z80 clock on **GPIO32**
   (`GPIO_PWM_SIG`); the PIO output pin is a parameter so the define is honoured.
   `CPU_SPEED` in `main.c` is the frequency and `CPU_DUTY` is the HIGH-time
@@ -501,15 +512,27 @@ changes so a stale flash config is rejected and rewritten.
 openFPGALoader), HDMI 640×480 output.  It is a fork of the local
 `tangprimer20k-oss-examples/dummy_terminal` example and is being grown into a
 hardware implementation of the same console protocol the RP2350 VoidVDP speaks
-(`doc/vdp_protocol.md`, `common/z80neo_protocol.h`), with the z80neo eventually
-driving it over **SPI** instead of UART.  Build/program/sim: `./build.sh
-[program|sim]`.  Phase 2 (colour text: per-cell fg/bg + 16-colour palette, SGR,
-cursor/erase, hardware scroll, input FIFO, `ESC g` payload consumption) is done
-and covered by `sim/tb_terminal.v`.  Phase 3 (SPI slave + firmware PIO SPI
-master and Z80 ports) and phase 4 (`ESC g` bitmap layer) are still to do; see
-`vdp/NullVDP/README.md` for the roadmap.  The firmware has **no SPI VDP port
-yet** — a PIO SPI master on free EXT2 pins (34/35/38, CS 39) plus Z80 ports and
-an optional console mirror is the planned phase-3 firmware work.
+(`doc/vdp_protocol.md`, `common/z80neo_protocol.h`), driven over **SPI** instead
+of UART.  Build/program/sim: `./build.sh [program|sim]`.  Phase 2 (colour text:
+per-cell fg/bg + 16-colour palette, SGR, cursor/erase, hardware scroll, input
+FIFO, `ESC g` payload consumption) is done and covered by `sim/tb_terminal.v`.
+Phase 3 (**SPI** — `src/spi_slave.v` plus the firmware master `src/spi_vdp.c`
+and Z80 ports `0x94`/`0x95`) is done: SPI console bytes (highest priority) feed
+the terminal and PS/2 keyboard bytes are pushed to the host RX FIFO; see
+`doc/nullvdp_spi_protocol.md`.  The link is on **Dock PMOD03** (SCK N6, MOSI A11,
+MISO B11, CS D11; Pico GPIO36/35/34/37).  It **must not** use bank-0/1 balls
+(e.g. PMOD02's D14 = `1/IOT44A`): the HDMI TMDS runs over true-LVDS, which forces
+banks 0/1 into LVDS mode, so those balls cannot do single-ended LVCMOS while HDMI
+is active and the SPI clock silently dies.  Phase 4 (`ESC g` bitmap layer) is
+still to do.
+The F12 options menu sets `cursor_en` / `local_echo` / `pal_bright`.
+**Local echo** is three-state **AUTO / ON / OFF** (default AUTO): AUTO echoes
+PS/2 keys locally only when the z80neo host is *not* driving the display, ON
+forces local echo even while the host polls the SPI link, OFF never does.
+`host_active` (any SPI traffic within ~0.15 s) alone could not be overridden
+because the firmware polls the link continuously, so the menu toggle had no
+effect while the Pico was attached — set ON to type locally.  See
+`vdp/NullVDP/README.md` for the roadmap.
 
 ## sdl_client (PC SDL3 VT100 terminal)
 

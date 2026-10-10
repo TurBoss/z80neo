@@ -2,7 +2,7 @@
 
 A CP/M 2.2 transient (`MIDI.COM`) that plays a Standard MIDI File (`.mid`) out
 **UART1 on ports `0x90` (data) / `0x91` (status)** at the MIDI rate — **31250
-baud 8N1** (GPIO36 = TX, GPIO37 = RX).  It is the CP/M twin of the bare-metal
+baud 8N1** (GPIO38 = TX, GPIO39 = RX).  It is the CP/M twin of the bare-metal
 `software/z80neo/midiplayer`; the two share the replay loop
 (`software/z80neo/midiplayer/midi_delay.asm`).
 

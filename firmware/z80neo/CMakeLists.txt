@@ -15,6 +15,7 @@ add_executable(z80neo
  src/fuzix_disk.c
  src/hardfault.c
  src/z80bus_pio.c
+ src/spi_vdp.c
  src/bootlogo.c
  src/main.c
     )
@@ -31,6 +32,8 @@ target_compile_definitions(z80neo PRIVATE PICO_USE_GPIO_COPROCESSOR=0)
 pico_generate_pio_header(z80neo ${CMAKE_CURRENT_LIST_DIR}/src/z80bus_pio.pio)
 # PIO clock generator (replaces PWM to free GPIO33)
 pico_generate_pio_header(z80neo ${CMAKE_CURRENT_LIST_DIR}/src/z80clock.pio)
+
+pico_generate_pio_header(z80neo ${CMAKE_CURRENT_LIST_DIR}/src/spi_vdp.pio)
 
 option(PSRAM_ENABLE "Enable PSRAM on RP2350 BB48R" OFF)
 if(PSRAM_ENABLE)

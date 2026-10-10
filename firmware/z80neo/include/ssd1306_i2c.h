@@ -103,6 +103,8 @@ void SSD1306_send_buf(uint8_t display_buf[], int buflen);
 void SSD1306_init();
 void SSD1306_scroll(bool on);
 
+void i2c_bus_recover(void);
+
 void render(uint8_t *display_buf, struct render_area *area);
 
 void SetPixel(uint8_t *display_buf, int x,int y, bool on);
