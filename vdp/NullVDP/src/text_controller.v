@@ -39,7 +39,9 @@ module text_controller #(
     input      [6:0]  cursor_x,
     input      [5:0]  cursor_y,
     input             cursor_visible,
+    input             cursor_style,   // 0 = block, 1 = underline
     input             pal_bright,
+    input             bell,           // visual bell: invert the frame briefly
     input      [5:0]  scroll_off,
 
     output     [11:0] char_addr,
@@ -52,6 +54,11 @@ module text_controller #(
     output     [9:0]  ov_rd_addr,
     input      [7:0]  ov_rd_char,
     input      [15:0] ov_rd_attr,
+
+    // bitmap (ESC g) layer
+    input             gfx_active,
+    output     [17:0] gfx_addr,
+    input      [2:0]  gfx_data,
 
     output            hsync,
     output            vsync,
@@ -104,11 +111,18 @@ module text_controller #(
     assign char_addr = phys_row * COLS + char_col;
     assign attr_addr = char_addr;
 
+    // ---- bitmap layer address ----------------------------------------------
+    // 640x256 layer centred vertically in the 480-line frame (112-line bars).
+    localparam GFX_YOFF = 112;
+    wire in_gfx_region = (pixel_y >= 10'd112) && (pixel_y < 10'd368);
+    wire [8:0] gfx_row  = pixel_y - 10'd112;
+    assign gfx_addr = in_gfx_region ? (gfx_row[7:0] * 18'd640 + pixel_x) : 18'd0;
+
     // ---- menu overlay -------------------------------------------------------
     localparam [6:0] BX0 = 7'd20;
-    localparam [5:0] BY0 = 6'd8;
+    localparam [5:0] BY0 = 6'd6;
     localparam [6:0] BW  = 7'd40;
-    localparam [5:0] BH  = 6'd13;
+    localparam [5:0] BH  = 6'd17;
 
     wire in_box = menu_active && (char_col >= BX0) && (char_col < BX0 + BW) &&
                                  (char_row >= BY0) && (char_row < BY0 + BH);
@@ -122,15 +136,18 @@ module text_controller #(
     reg [5:0] s0_row;
     reg       s0_de, s0_hsync, s0_vsync;
     reg       s0_inbox;
+    reg       s0_in_gfx;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s0_col <= 7'd0; s0_px <= 3'd0; s0_py <= 4'd0; s0_row <= 6'd0;
             s0_de <= 1'b0; s0_hsync <= 1'b0; s0_vsync <= 1'b0; s0_inbox <= 1'b0;
+            s0_in_gfx <= 1'b0;
         end else begin
             s0_col <= char_col; s0_px <= char_pix_x; s0_py <= char_pix_y; s0_row <= char_row;
             s0_de <= raw_de; s0_hsync <= raw_hsync; s0_vsync <= raw_vsync;
             s0_inbox <= in_box;
+            s0_in_gfx <= in_gfx_region;
         end
     end
 
@@ -153,16 +170,20 @@ module text_controller #(
     reg [3:0]  s1_py;
     reg [5:0]  s1_row;
     reg        s1_de, s1_hsync, s1_vsync;
+    reg [2:0]  s1_gfx;
+    reg        s1_in_gfx, s1_inbox;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s1_attr <= 16'h0070;
             s1_col <= 7'd0; s1_px <= 3'd0; s1_py <= 4'd0; s1_row <= 6'd0;
             s1_de <= 1'b0; s1_hsync <= 1'b0; s1_vsync <= 1'b0;
+            s1_gfx <= 3'd0; s1_in_gfx <= 1'b0; s1_inbox <= 1'b0;
         end else begin
             s1_attr <= eff_attr;
             s1_col <= s0_col; s1_px <= s0_px; s1_py <= s0_py; s1_row <= s0_row;
             s1_de <= s0_de; s1_hsync <= s0_hsync; s1_vsync <= s0_vsync;
+            s1_gfx <= gfx_data; s1_in_gfx <= s0_in_gfx; s1_inbox <= s0_inbox;
         end
     end
 
@@ -174,17 +195,21 @@ module text_controller #(
     reg [3:0]  s2_py;
     reg [5:0]  s2_row;
     reg        s2_de, s2_hsync, s2_vsync;
+    reg [2:0]  s2_gfx;
+    reg        s2_in_gfx, s2_inbox;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             s2_font <= 8'd0; s2_attr <= 16'h0070;
             s2_col <= 7'd0; s2_px <= 3'd0; s2_py <= 4'd0; s2_row <= 6'd0;
             s2_de <= 1'b0; s2_hsync <= 1'b0; s2_vsync <= 1'b0;
+            s2_gfx <= 3'd0; s2_in_gfx <= 1'b0; s2_inbox <= 1'b0;
         end else begin
             s2_font <= font_row;
             s2_attr <= s1_attr;
             s2_col <= s1_col; s2_px <= s1_px; s2_py <= s1_py; s2_row <= s1_row;
             s2_de <= s1_de; s2_hsync <= s1_hsync; s2_vsync <= s1_vsync;
+            s2_gfx <= s1_gfx; s2_in_gfx <= s1_in_gfx; s2_inbox <= s1_inbox;
         end
     end
 
@@ -212,13 +237,37 @@ module text_controller #(
     wire pixel_on  = s2_font[7 - s2_px];
     wire hide      = attr_bl & blink;
     wire underline = attr_ul && (s2_py >= 4'd14);
+    wire cur_row   = cursor_style ? (s2_py >= 4'd14) : 1'b1;   // underline: bottom rows
     wire cur_on    = (s2_col == cursor_x) && (s2_row == cursor_y) &&
-                     cursor_visible && blink;
+                     cursor_visible && blink && cur_row;
 
     wire [3:0] norm_col = underline ? eff_fg :
                           ((pixel_on && !hide) ? eff_fg : eff_bg);
     wire [3:0] curs_col = pixel_on ? eff_bg : eff_fg;
-    wire [3:0] pix_col  = s2_de ? (cur_on ? curs_col : norm_col) : 4'h0;
+    wire [3:0] text_col = cur_on ? curs_col : norm_col;
+    // While bitmap mode is active the layer replaces the text grid (black
+    // outside the 256-line bitmap); the menu box still overlays on top.
+    // 8-colour bitmap index -> 16-colour palette entry (keeps greys distinct:
+    // black / dark grey / light grey / white, then blue/green/red/yellow).
+    function [3:0] gfxpal;
+        input [2:0] i;
+        begin
+            case (i)
+                3'd0: gfxpal = 4'd0;    // black
+                3'd1: gfxpal = 4'd8;    // dark grey
+                3'd2: gfxpal = 4'd7;    // light grey
+                3'd3: gfxpal = 4'd15;   // white
+                3'd4: gfxpal = 4'd1;    // blue
+                3'd5: gfxpal = 4'd2;    // green
+                3'd6: gfxpal = 4'd4;    // red
+                3'd7: gfxpal = 4'd14;   // yellow
+            endcase
+        end
+    endfunction
+
+    wire [3:0] gfx_col   = s2_in_gfx ? gfxpal(s2_gfx) : 4'h0;
+    wire [3:0] layer_col = (gfx_active && !s2_inbox) ? gfx_col : text_col;
+    wire [3:0] pix_col   = s2_de ? layer_col : 4'h0;
 
     wire [7:0] pal_r, pal_g, pal_b;
     palette u_pal (
@@ -247,9 +296,9 @@ module text_controller #(
         end
     end
 
-    assign red   = s3_red;
-    assign green = s3_green;
-    assign blue  = s3_blue;
+    assign red   = bell ? ~s3_red   : s3_red;
+    assign green = bell ? ~s3_green : s3_green;
+    assign blue  = bell ? ~s3_blue  : s3_blue;
     assign de    = s3_de;
     assign hsync = s3_hsync;
     assign vsync = s3_vsync;

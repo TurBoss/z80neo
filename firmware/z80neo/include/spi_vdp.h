@@ -12,13 +12,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Slave register addresses (see the NullVDP spi_slave.v). */
-#define VDP_REG_STATUS 0x00
-#define VDP_REG_TX     0x01
-#define VDP_REG_RX     0x02
-#define VDP_REG_CTRL   0x03
-#define VDP_REG_ID     0x04
-
+/* Framed link status bits (see doc/nullvdp_spi_protocol.md). */
 #define VDP_ST_TX_READY 0x01
 #define VDP_ST_RX_AVAIL 0x02
 #define VDP_ST_RX_OVF   0x04
@@ -34,6 +28,11 @@ void spi_vdp_init(void);
 /* Queue a console byte for the VDP (drained by spi_vdp_poll). */
 void vdp_console_tx(uint8_t c);
 
+/* True when there is room in the VDP TX ring; callers that mirror the console
+   to both UART0 and the VDP must wait for this so the (slower) SPI link never
+   drops bytes out of the console stream. */
+bool vdp_console_ready(void);
+
 /* Block until every queued VDP console byte has been sent (flow-controlled).
    Used to mirror the boot log synchronously. */
 void vdp_console_flush(void);
@@ -44,8 +43,8 @@ void spi_vdp_poll(void);
 /* Wire-ID helper (nullvdp_ident bitstream): rising edges on one pin over ~2 s. */
 uint32_t vdp_probe_pin_edges(uint32_t pin);
 
-/* Diagnostic: one very slow (~2.5 kHz) ID read. */
-uint16_t vdp_probe_slow(void);
+/* Diagnostic: one deliberately slow poll frame. */
+uint32_t vdp_probe_slow(void);
 
 /* Last status byte read from the slave (bit0/1/2 above). */
 extern volatile uint8_t vdp_status;

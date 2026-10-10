@@ -487,7 +487,7 @@ int main(void) {
         snprintf(vdpmsg, sizeof vdpmsg,
                  "VDP SPI probe: raw=0x%08X id=0x%02X status=0x%02X "
                  "(present=%u txrdy=%u rxavail=%u rxovf=%u)\r\n",
-                 (unsigned)vdp_id_raw, (unsigned)(vdp_id_raw & 0xFF),
+                  (unsigned)vdp_id_raw, (unsigned)((vdp_id_raw >> 8) & 0xFF),
                  (unsigned)vdp_status,
                  (unsigned)((vdp_status >> 7) & 1), (unsigned)(vdp_status & 1),
                  (unsigned)((vdp_status >> 1) & 1), (unsigned)((vdp_status >> 2) & 1));
@@ -499,13 +499,12 @@ int main(void) {
                  (unsigned)vdp_miso_pd, (unsigned)vdp_miso_follows);
         boot_log(vdpmsg);
 
-        // Slow (~2.5 kHz) ID read: separates a wiring/protocol fault from an
-        // edge-rate / signal-integrity fault.
+        // Repeat the framed ID poll for a second diagnostic read.
         {
-            uint16_t slow = vdp_probe_slow();
+            uint32_t slow = vdp_probe_slow();
             snprintf(vdpmsg, sizeof vdpmsg,
-                     "VDP SPI slow ID: raw=0x%08X id=0x%02X\r\n",
-                     (unsigned)slow, (unsigned)(slow & 0xFF));
+                     "VDP SPI repeat poll: raw=0x%08X rx=0x%02X\r\n",
+                     (unsigned)slow, (unsigned)((slow >> 8) & 0xFF));
             boot_log(vdpmsg);
         }
 
@@ -569,7 +568,7 @@ int main(void) {
         if (z80bus_diag_reset) { z80bus_diag_reset = false; z80bus_pio_diag_reset(); }
         if (z80bus_diag_dump)  { z80bus_diag_dump = false;  z80bus_pio_dump(); }
         // Flush 1 UART byte per poll
-        if (tx_count > 0 && uart_is_writable(UART_ID)) {
+        if (tx_count > 0 && uart_is_writable(UART_ID) && vdp_console_ready()) {
             echo_track_tx(tx_buffer[tx_tail]);
             uart_putc(UART_ID, tx_buffer[tx_tail]);
             vdp_console_tx(tx_buffer[tx_tail]);   // mirror the console to the NullVDP

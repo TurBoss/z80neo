@@ -46,6 +46,11 @@ RP2040 VGA the `z80neo_gfx_*` calls are no-ops.  The PC `sdl_client`
 implements the same `ESC g` protocol, so it renders these demos too (no DVI or
 VGA display needed).
 
+The **NullVDP** (Tang Primer 20K FPGA VDP, `vdp/NullVDP/`) implements the same
+`ESC g` protocol, so these demos run on it unchanged.  Its bitmap layer is
+**8 colours** (3bpp); a colour byte's low 3 bits select palette entries 0-7, so
+the bright half of the palette (8-15) appears as its base colour.
+
 On RP2350 the layer is **true-colour**: every pixel stores its own display
 colour, so drawing a shape after `z80neo_gfx_color()`, or using
 `z80neo_gfx_pixel()`, gives per-pixel colour.

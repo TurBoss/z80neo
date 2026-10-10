@@ -1,85 +1,70 @@
 # NullVDP SPI link protocol
 
-The z80neo (RP2350) drives the NullVDP (Tang Primer 20K FPGA terminal) over a
-short **SPI** link.  The Pico is the **master**; the NullVDP is the **slave**.
-This replaces the bring-up UART as the display transport while keeping the same
-console byte stream (`doc/vdp_protocol.md`) — text, CSI sequences and the
-`ESC g` graphics protocol all travel unchanged.
+The z80neo RP2350 drives the NullVDP Tang Primer 20K terminal over a short
+3.3 V SPI link. The Pico is the master; the NullVDP is the slave. The link
+uses PIO and acknowledged 32-bit frames, while the payload remains the same
+console byte stream used by UART and the `ESC g` graphics protocol.
 
 ## Physical
 
-| Signal | z80neo (master) | NullVDP (slave) | Notes |
-|--------|-----------------|-----------------|-------|
-| SCK    | GPIO36          | N6  (IOR51A)    | Dock PMOD03, bank 3, 3.3 V |
-| MOSI   | GPIO35          | A11 (IOL15A)    | Dock PMOD03, bank 7, 3.3 V |
-| MISO   | GPIO34          | B11 (IOL13A)    | Dock PMOD03, bank 7, 3.3 V |
-| CS_N   | GPIO37          | D11 (IOL22A)    | Dock PMOD03, bank 7, 3.3 V, active low |
-| GND    | GND             | GND             | common ground required |
+| Signal | z80neo | NullVDP | Notes |
+|--------|--------|---------|-------|
+| SCK | GPIO36 | N6 | Dock PMOD03 |
+| MOSI | GPIO35 | A11 | Dock PMOD03 |
+| MISO | GPIO34 | B11 | Dock PMOD03 |
+| CS_N | GPIO37 | D11 | Dock PMOD03, active low |
+| GND | GND | GND | common ground required |
 
-**Do not use the Dock's bank-0/1 pins for the link** (e.g. PMOD02's D14 =
-`1/IOT44A`).  HDMI drives the TMDS over true-LVDS, which forces IO banks 0/1
-into LVDS mode, so those balls cannot do single-ended LVCMOS while HDMI is
-active — the SPI clock silently dies.  PMOD03 (banks 3/7) is safe.
-
-Wiring is 3.3 V direct (no level shifting).  Keep the wires short.  The firmware
-master is a plain C bit-bang at ~250 kHz (`spi_vdp.c`, `VDP_SPI_DELAY_US = 2`);
-the slave oversamples SCK in its 27 MHz domain, so keep SCK ≲ 6 MHz.
-(`src/spi_vdp.pio` is a PIO variant that is generated but not yet wired in.)
+Do not use Dock bank-0/1 pins: HDMI forces those FPGA banks into LVDS mode.
+The PIO master currently runs at approximately 2 MHz; the FPGA synchronizes
+the external SCK into its 27 MHz clock domain.
 
 ## Framing
 
-SPI **mode 0** (CPOL = 0, CPHA = 0), **MSB-first**, active-low CS.  Each
-transaction is **16 bits**, held under one CS pulse:
+SPI mode 0, MSB-first, active-low CS. Each transaction is 32 bits:
 
+```text
+master -> slave: KIND SEQUENCE DATA CRC8
+slave  -> master: STATUS ACK RXDATA CRC8
 ```
-master -> slave :  CMD[7:0]   DATA[7:0]
-slave  -> master:  STATUS[7:0] RDATA[7:0]
-```
 
-`CMD = (addr[6:0] << 1) | rw` where `rw = 1` is a write and `rw = 0` a read.
-`STATUS` is returned in the **first** byte of *every* transaction, so the master
-learns TX_READY / RX_AVAIL from the previous transfer (one transfer of
-pipeline).  `RDATA` is selected by the current `CMD` and is valid in the second
-byte.  A write ignores `RDATA`; a read ignores `DATA`.
+CRC-8 uses polynomial `0x07` over the first three bytes, with an initial value
+of zero.
 
-## Registers
+`KIND=0xA5` carries one console byte. `KIND=0x5A` is a poll frame and carries
+no data. `KIND=0x5B` synchronizes the link, clearing the slave TX sequence and
+FIFO; the master sends it at startup before polling. The first synchronized
+poll response places the ID `0x4E` (`N`) in `RXDATA`.
+Later poll responses place a keyboard byte there when `RX_AVAIL` is set.
 
-| addr | name | R/W | value |
-|------|------|-----|-------|
-| 0x00 | STATUS  | R | bit0 TX_READY, bit1 RX_AVAIL, bit2 RX_OVF, bit7 = 1 |
-| 0x01 | TX_DATA | W | console byte to display |
-| 0x02 | RX_DATA | R | keyboard byte for the host |
-| 0x03 | CTRL    | W | write 1 clears RX_OVF |
-| 0x04 | ID      | R | `0x4E` ('N') |
+`ACK` is the last accepted console sequence number. A frame with a bad CRC or
+unexpected sequence is ignored. If the master repeats the last frame after a
+lost response, the slave acknowledges the duplicate without delivering the
+byte twice. This prevents one electrical error from desynchronizing the
+terminal parser.
 
-- **TX_READY** — the slave's 8-byte console FIFO has space.  A write with
-  TX_READY clear is dropped.
-- **RX_AVAIL** — a keyboard byte is waiting; read it with `RX_DATA`.  Reading
-  `RX_DATA` pops the FIFO only when RX_AVAIL was set.
-- **RX_OVF** — a keyboard byte was dropped because the FIFO was full.
+## Status
 
-## Master behaviour (z80neo firmware, `firmware/z80neo/src/spi_vdp.c`)
+The response `STATUS` byte contains:
 
-- `spi_vdp_init()` probes `ID`; the link is enabled only if it reads `0x4E`
-  (so an unwired link is inert and cannot inject garbage).
-- The main loop mirrors every byte drained from the console TX ring
-  (`tx_buffer`, fed by port `0x80` and `console_putc`) to the VDP.
-- Each `spi_vdp_poll()` push one console byte when TX_READY, otherwise reads
-  `RX_DATA`; bytes the slave reports are injected into the console RX ring so
-  the Z80 sees them on port `0x80` as ordinary console input.
-- Z80 ports: `0x94` write = VDP console byte, `0x95` read = STATUS.
+- bit 0: TX FIFO has space
+- bit 1: keyboard RX byte available
+- bit 2: keyboard RX overflow occurred
+- bit 7: NullVDP present
 
-## Slave behaviour (NullVDP `src/spi_slave.v`)
+The console TX and keyboard RX FIFOs are eight bytes deep. The master retries
+TX frames while the slave reports a full TX FIFO.
 
-- SPI bytes feed the terminal as the highest-priority console source.
-- PS/2 keyboard bytes are pushed to the RX FIFO for the host.  Local echo is
-  controlled by the menu (AUTO/ON/OFF): AUTO suppresses the local PS/2 echo when
-  the host is driving the display (recent SPI traffic) so characters are not
-  doubled (the host echoes them back), ON forces local echo even while the host
-  polls, OFF never echoes locally.
-- The TX/RX FIFOs are 8 bytes deep.
+## Firmware behaviour
 
-## Sim
+`spi_vdp_init()` configures the PIO master and probes the ID. The main loop
+mirrors every byte drained from the console TX ring, fed by Z80 port `0x80`
+and firmware `console_putc()`, into acknowledged frames. Z80 port `0x94`
+remains a direct console-byte enqueue path, and port `0x95` reports the latest
+link status.
 
-`vdp/NullVDP/sim/tb_spi.v` models the master and checks register access,
-TX handoff/back-pressure and RX reads: `make sim-spi`.
+## Simulation
+
+`vdp/NullVDP/sim/tb_spi.v` checks ID, framed TX delivery, duplicate suppression,
+keyboard RX, and status handling. `tb_spi_gfx.v` replays a captured console
+stream through the framed SPI slave, terminal parser, and graphics engine.

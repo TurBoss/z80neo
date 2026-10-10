@@ -110,13 +110,17 @@ Rendering differences by display:
 | VDP on **RP2350**, VGA | **true colour**: the same buffer as a native 8-bit R3G3B2 layer |
 | VDP on **RP2040**, DVI | 1bpp, two colours (`fg`/`bg`) per 8x16 character cell |
 | VDP on **RP2040**, VGA | no graphics layer (the RP2040 lacks RAM for it) |
+| **NullVDP** (Tang Primer 20K FPGA) | **8 colours** (3bpp): three 640x256 bitplanes, palette entries 0-7; layer centred vertically (112-line bars), shown instead of the text grid while bitmap mode is on |
 | **sdl_client** | true colour, same 16-colour palette |
 
 So on an RP2350 VDP (either output) drawing different shapes after `ESC g 0x03`
 (or using command 0x07) gives per-pixel colour; on RP2040 DVI the colour is
-quantised to two per character cell, and on RP2040 VGA there is no layer.  On
+quantised to two per character cell, and on RP2040 VGA there is no layer. On
 VGA the layer is shown at the top of the screen (256 lines); on DVI it is
-centred vertically.
+centred vertically.  On the **NullVDP** only 8 of the 16 palette colours are
+representable (the low 3 bits of the colour byte), and text is *not* rendered
+into the bitmap: the text grid is kept intact and reappears when bitmap mode is
+turned off.
 
 BBC BASIC (`software/bbcbasic-z80/hardware.asm`) drives this from `MODE`,
 `GCOL`, `CLG`, `PLOT`, `MOVE` and `DRAW`.

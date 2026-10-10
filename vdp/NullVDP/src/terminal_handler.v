@@ -51,7 +51,19 @@ module terminal_handler #(
     output reg        key_up,       // CSI A
     output reg        key_down,     // CSI B
     output reg        key_enter,    // CR
-    output reg        key_esc       // lone ESC (timeout)
+    output reg        key_esc,      // lone ESC (timeout)
+    output reg        bell,         // BEL received (1-cycle pulse)
+
+    // ---- ESC g graphics -----------------------------------------------------
+    output reg        gfx_active,   // bitmap layer displayed (sync to pixel clk)
+    output reg [2:0]  gfx_fg,       // current foreground palette index (0-7)
+    output reg [2:0]  gfx_bg,       // current background palette index (0-7)
+    output reg        gfx_start,    // 1-cycle pulse to gfx_engine
+    output reg [1:0]  gfx_shape,    // 0 pixel, 1 line, 2 fill
+    output reg [2:0]  gfx_colour,   // colour for the plotted pixels
+    output reg [10:0] gfx_ax, gfx_bx,
+    output reg [8:0]  gfx_ay, gfx_by,
+    input             gfx_busy      // engine running; hold the console
 );
 
     localparam [5:0] LAST_ROW = ROWS - 1;
@@ -64,7 +76,8 @@ module terminal_handler #(
         ST_CSI     = 3'd2,
         ST_INTERM  = 3'd3,
         ST_GFX_CMD = 3'd4,
-        ST_GFX_PAY = 3'd5;
+        ST_GFX_PAY = 3'd5,
+        ST_GFX_EXEC= 3'd6;
 
     reg [2:0] state;
     reg [17:0] esc_timer;
@@ -72,6 +85,12 @@ module terminal_handler #(
     reg [2:0] np;                 // number of collected params
     reg [9:0] p [0:7];            // padded so guarded index arithmetic stays in range
     reg [4:0] gfx_left;
+
+    // ---- ESC g graphics params ---------------------------------------------
+    reg [7:0]  gp [0:8];          // graphics payload bytes
+    reg [3:0]  gfx_pidx;          // payload index
+    reg [7:0]  gfx_cmd_r;         // latched graphics command byte
+    reg        gfx_wait;          // hold the console until gfx_engine is done
 
     // ---- multi-cycle SGR ----------------------------------------------------
     reg       sgr_active;
@@ -115,7 +134,32 @@ module terminal_handler #(
     wire [11:0] faddr = phys(fr, fc);
     wire [15:0] fattr = {5'b0, 3'b000, bg, 4'h7};  // space, current bg, fg=7
 
-    assign rx_ready = !fill_active && !sgr_active;
+    // Map a 16-colour host value to the 8-colour (3bpp) bitmap layer.  Only 8
+    // colours fit, so bright shades fold onto their base colour -- but greys
+    // are kept distinct (0 black, 8 dark grey, 7 light grey, 15 white) so the
+    // boot logo's grey/white strokes do not collapse to black.
+    function [2:0] gfxmap;
+        input [3:0] c;
+        begin
+            case (c)
+                4'd0:                      gfxmap = 3'd0;  // black
+                4'd8:                      gfxmap = 3'd1;  // dark grey
+                4'd7:                      gfxmap = 3'd2;  // light grey
+                4'd15:                     gfxmap = 3'd3;  // white
+                4'd1,  4'd9:               gfxmap = 3'd4;  // blue
+                4'd2,  4'd3, 4'd10, 4'd11: gfxmap = 3'd5;  // green / cyan
+                4'd4,  4'd5, 4'd12, 4'd13: gfxmap = 3'd6;  // red / magenta
+                4'd6,  4'd14:              gfxmap = 3'd7;  // brown / yellow
+                default:                   gfxmap = 3'd0;
+            endcase
+        end
+    endfunction
+
+    // The self-timed ST_GFX_EXEC cycle dispatches a command without consuming
+    // rx_data, so hold rx_ready low for it -- otherwise the byte present that
+    // cycle (the next stream byte) is silently dropped, desyncing the console.
+    assign rx_ready = !fill_active && !sgr_active && !gfx_wait
+                      && (state != ST_GFX_EXEC);
 
     // ---- tasks --------------------------------------------------------------
     task start_fill;
@@ -165,6 +209,18 @@ module terminal_handler #(
             priv     <= 1'b0;
             np       <= 3'd0;
             gfx_left <= 5'd0;
+            gfx_pidx <= 4'd0;
+            gfx_cmd_r <= 8'd0;
+            gfx_wait <= 1'b0;
+            gfx_active <= 1'b0;
+            gfx_fg <= 3'd2;
+            gfx_bg <= 3'd0;
+            gfx_start <= 1'b0;
+            gfx_shape <= 2'd0;
+            gfx_colour <= 3'd0;
+            gfx_ax <= 11'd0; gfx_bx <= 11'd0;
+            gfx_ay <= 9'd0;  gfx_by <= 9'd0;
+            for (k = 0; k < 9; k = k + 1) gp[k] <= 8'd0;
             sgr_active <= 1'b0;
             sgr_idx  <= 2'd0;
             sgr_skip <= 2'd0;
@@ -195,9 +251,14 @@ module terminal_handler #(
             key_down <= 1'b0;
             key_enter <= 1'b0;
             key_esc <= 1'b0;
+            bell <= 1'b0;
+            gfx_start <= 1'b0;
             n1 = 10'd0;
             n2 = 10'd0;
             m  = 10'd0;
+
+            // release the console once the graphics engine has finished
+            if (gfx_wait && !gfx_busy) gfx_wait <= 1'b0;
 
             // -----------------------------------------------------------------
             // Fill engine: write priority, blocks byte consumption
@@ -274,6 +335,75 @@ module terminal_handler #(
             // Byte consumption
             // -----------------------------------------------------------------
             // lone-ESC timeout -> menu "back/close"
+            // -----------------------------------------------------------------
+            // Execute a fully-collected ESC g command (self-timed, one cycle)
+            // -----------------------------------------------------------------
+            else if (state == ST_GFX_EXEC) begin
+                state <= ST_GROUND;
+                case (gfx_cmd_r)
+                    8'h01: begin                            // mode on/off
+                        gfx_active <= (gp[0] != 0);
+                        if (gp[0] != 0) begin            // turning on clears to bg
+                            gfx_start  <= 1'b1;
+                            gfx_shape  <= 2'd2;
+                            gfx_colour <= gfx_bg;
+                            gfx_ax <= 11'd0;  gfx_ay <= 9'd0;
+                            gfx_bx <= 11'd640; gfx_by <= 9'd256;
+                            gfx_wait   <= 1'b1;
+                        end
+                    end
+                    8'h02: begin                            // clear bitmap
+                        gfx_start  <= 1'b1;
+                        gfx_shape  <= 2'd2;
+                        gfx_colour <= gfx_bg;
+                        gfx_ax <= 11'd0;  gfx_ay <= 9'd0;
+                        gfx_bx <= 11'd640; gfx_by <= 9'd256;
+                        gfx_wait   <= 1'b1;
+                    end
+                        8'h03: begin                            // set fg/bg colours
+                            gfx_fg <= gfxmap(gp[0][3:0]);
+                            gfx_bg <= gfxmap(gp[1][3:0]);
+                        end
+                    8'h04: begin                            // plot pixel (fg/bg)
+                        gfx_start  <= 1'b1;
+                        gfx_shape  <= 2'd0;
+                        gfx_colour <= gp[4] ? gfx_fg : gfx_bg;
+                        gfx_ax     <= gp[0] | (gp[1] << 8);
+                        gfx_ay     <= gp[2] | (gp[3] << 8);
+                        gfx_wait   <= 1'b1;
+                    end
+                        8'h07: begin                            // plot pixel (explicit colour)
+                            gfx_start  <= 1'b1;
+                            gfx_shape  <= 2'd0;
+                            gfx_colour <= gfxmap(gp[4][3:0]);
+                        gfx_ax     <= gp[0] | (gp[1] << 8);
+                        gfx_ay     <= gp[2] | (gp[3] << 8);
+                        gfx_wait   <= 1'b1;
+                    end
+                    8'h05: begin                            // line
+                        gfx_start  <= 1'b1;
+                        gfx_shape  <= 2'd1;
+                        gfx_colour <= gp[8] ? gfx_fg : gfx_bg;
+                        gfx_ax     <= gp[0] | (gp[1] << 8);
+                        gfx_ay     <= gp[2] | (gp[3] << 8);
+                        gfx_bx     <= gp[4] | (gp[5] << 8);
+                        gfx_by     <= gp[6] | (gp[7] << 8);
+                        gfx_wait   <= 1'b1;
+                    end
+                    8'h06: begin                            // filled rectangle
+                        gfx_start  <= 1'b1;
+                        gfx_shape  <= 2'd2;
+                        gfx_colour <= gp[8] ? gfx_fg : gfx_bg;
+                        gfx_ax     <= gp[0] | (gp[1] << 8);
+                        gfx_ay     <= gp[2] | (gp[3] << 8);
+                        gfx_bx     <= gp[4] | (gp[5] << 8);
+                        gfx_by     <= gp[6] | (gp[7] << 8);
+                        gfx_wait   <= 1'b1;
+                    end
+                    default: ;
+                endcase
+            end
+
             else if (state == ST_ESC && !rx_valid) begin
                 esc_timer <= esc_timer + 18'd1;
                 if (esc_timer == 18'h2FFFF) begin
@@ -281,7 +411,10 @@ module terminal_handler #(
                     state   <= ST_GROUND;
                 end
             end
-            else if (rx_valid) begin
+            // Consume only when rx_ready: the source (SPI slave) holds the byte
+            // until rx_ready, so an ungated rx_valid would be re-processed every
+            // cycle while the handler is busy (e.g. gfx_wait during a draw).
+            else if (rx_valid && rx_ready) begin
                 esc_timer <= 18'd0;
                 case (state)
 
@@ -294,7 +427,7 @@ module terminal_handler #(
                         8'h08, 8'h7F: if (cur_x > 0) cur_x <= cur_x - 7'd1;  // BS/DEL
                         8'h09: if (cur_x < LAST_COL)                         // HT
                                   cur_x <= {cur_x[6:3] + 4'd1, 3'd0};
-                        8'h07: ;                                             // BEL
+                        8'h07: bell <= 1'b1;                                 // BEL
                         default: begin
                             if (rx_data >= 8'h20 && rx_data <= 8'h7E) begin
                                 char_we    <= 1'b1;
@@ -472,25 +605,32 @@ module terminal_handler #(
                 end
 
                 // -------------------------------------------------------------
+                // ESC g <cmd>: latch the command and its payload length
                 ST_GFX_CMD: begin
+                    gfx_cmd_r <= rx_data;
+                    gfx_pidx  <= 4'd0;
                     case (rx_data)
-                        8'h01: gfx_left <= 5'd1;
-                        8'h02: begin gfx_left <= 5'd1;
-                                     start_fill(6'd0, 7'd0, LAST_ROW, LAST_COL); end
-                        8'h03: gfx_left <= 5'd2;
-                        8'h04, 8'h07: gfx_left <= 5'd5;
-                        8'h05, 8'h06: gfx_left <= 5'd9;
-                        default: gfx_left <= 5'd0;
+                        8'h01, 8'h02: begin gfx_left <= 5'd1; state <= ST_GFX_PAY; end
+                        8'h03:        begin gfx_left <= 5'd2; state <= ST_GFX_PAY; end
+                        8'h04, 8'h07: begin gfx_left <= 5'd5; state <= ST_GFX_PAY; end
+                        8'h05, 8'h06: begin gfx_left <= 5'd9; state <= ST_GFX_PAY; end
+                        default:      state <= ST_GROUND;
                     endcase
-                    state <= ST_GFX_PAY;
                 end
 
-                // consume the graphics payload (drawing is a later phase)
+                // ---- collect the payload bytes ------------------------------
                 ST_GFX_PAY: begin
+                    gp[gfx_pidx] <= rx_data;
                     if (gfx_left <= 5'd1)
-                        state <= ST_GROUND;
-                    gfx_left <= gfx_left - 5'd1;
+                        state <= ST_GFX_EXEC;
+                    else begin
+                        gfx_pidx <= gfx_pidx + 4'd1;
+                        gfx_left <= gfx_left - 5'd1;
+                    end
                 end
+
+                // graphics dispatch happens in the self-timed ST_GFX_EXEC
+                // branch above; nothing to do here.
 
                 default: state <= ST_GROUND;
                 endcase

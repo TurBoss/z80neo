@@ -1,8 +1,9 @@
 // ============================================================================
 // overlay_ram.v - menu overlay cells (dual-clock BRAM, like char_buffer)
 // ============================================================================
-// 520 cells x {attr[15:0], char[7:0]}, written by the menu (system clock) and
+// 680 cells x {attr[15:0], char[7:0]}, written by the menu (system clock) and
 // read by the text controller (pixel clock) to paint the menu box.
+// (40 cols x 17 rows = 680.)
 
 module overlay_ram (
     input             clk_rd,
@@ -17,7 +18,7 @@ module overlay_ram (
     input      [15:0] wr_attr
 );
 
-    reg [23:0] mem [0:519];
+    reg [23:0] mem [0:679];
 
     always @(posedge clk_rd) begin
         {rd_attr, rd_char} <= mem[rd_addr];

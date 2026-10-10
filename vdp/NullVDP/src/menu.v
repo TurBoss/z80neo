@@ -11,8 +11,9 @@
 // opens / closes.  While the menu is open the top module consumes the keyboard
 // locally (nothing is forwarded to the z80neo).
 //
-// Settings live in this module and are exported as cursor_en / local_echo /
-// pal_bright; actions are the one-cycle pulses act_clear / act_reset.
+// Settings live in this module and are exported (cursor_en / cursor_style /
+// local_echo / pal_bright / bell_en); actions are the one-cycle pulses
+// act_clear / act_reset.
 // ============================================================================
 
 module menu (
@@ -32,8 +33,10 @@ module menu (
 
     // settings; local_echo: 0 = AUTO (echo when standalone), 1 = ON, 2 = OFF
     output reg        cursor_en,
+    output reg        cursor_style, // 0 = block, 1 = underline
     output reg [1:0]  local_echo,
     output reg        pal_bright,
+    output reg        bell_en,      // 0 = off, 1 = visual bell
 
     // actions (1-cycle)
     output reg        act_clear,
@@ -47,19 +50,22 @@ module menu (
 );
 
     localparam [6:0] X0 = 7'd20;
-    localparam [5:0] Y0 = 6'd8;
+    localparam [5:0] Y0 = 6'd6;
     localparam [6:0] W  = 7'd40;
-    localparam [5:0] H  = 6'd13;
+    localparam [5:0] H  = 6'd17;
 
     localparam TXT_W = 38;
-    localparam PAGE_STRIDE = TXT_W * 11;    // 418
+    localparam PAGE_STRIDE = TXT_W * 15;    // 570
 
     localparam [15:0] A_BORDER = 16'h001B;
     localparam [15:0] A_TITLE  = 16'h001E;
     localparam [15:0] A_BODY   = 16'h001F;
     localparam [15:0] A_HILITE = 16'h00F0;
 
-    localparam [3:0] MAXSEL = 4'd7;
+    // Main-page items: 0 cursor, 1 cursor style, 2 local echo, 3 palette,
+    // 4 bell, 5 clear, 6 reset, 7 help, 8 serial, 9 colours, 10 about,
+    // 11 credits, 12 close.
+    localparam [3:0] MAXSEL = 4'd12;
 
     localparam [1:0]
         S_CLOSED = 2'd0,
@@ -76,7 +82,7 @@ module menu (
 
     // ---- ROM address for the current cell ----------------------------------
     wire [4:0] tline_x = (r == 0) ? 5'd0 : ({1'b0, r} - 6'd1);
-    wire [3:0] tline  = (tline_x > 5'd10) ? 4'd10 : tline_x[3:0];
+    wire [3:0] tline  = (tline_x > 5'd14) ? 4'd14 : tline_x[3:0];
     wire [5:0] tcol   = (c == 0) ? 6'd0 : (c[5:0] - 6'd1);
     wire [5:0] tcol_c = (tcol > 6'd37) ? 6'd37 : tcol;
     wire [11:0] rom_addr = page * PAGE_STRIDE + tline * TXT_W + tcol_c;
@@ -94,6 +100,28 @@ module menu (
             if (en) v_onoff = (i == 0) ? 8'h4F : (i == 1) ? 8'h4E : 8'h20;   // "ON"
             else    v_onoff = (i == 0) ? 8'h4F : (i == 1) ? 8'h46 :
                               (i == 2) ? 8'h46 : 8'h20;                       // "OFF"
+        end
+    endfunction
+
+    function [7:0] v_cstyle;
+        input       style;
+        input [5:0] i;
+        begin
+            if (style) begin // "UNDERLINE"
+                case (i)
+                    6'd0: v_cstyle = 8'h55; 6'd1: v_cstyle = 8'h4E;
+                    6'd2: v_cstyle = 8'h44; 6'd3: v_cstyle = 8'h45;
+                    6'd4: v_cstyle = 8'h52; 6'd5: v_cstyle = 8'h4C;
+                    6'd6: v_cstyle = 8'h49; 6'd7: v_cstyle = 8'h4E;
+                    6'd8: v_cstyle = 8'h45; default: v_cstyle = 8'h20;
+                endcase
+            end else begin   // "BLOCK"
+                case (i)
+                    6'd0: v_cstyle = 8'h42; 6'd1: v_cstyle = 8'h4C;
+                    6'd2: v_cstyle = 8'h4F; 6'd3: v_cstyle = 8'h43;
+                    6'd4: v_cstyle = 8'h4B; default: v_cstyle = 8'h20;
+                endcase
+            end
         end
     endfunction
 
@@ -122,11 +150,30 @@ module menu (
         end
     endfunction
 
+    function [7:0] v_bell;
+        input       on;
+        input [5:0] i;
+        begin
+            if (on) begin   // "VISUAL"
+                case (i)
+                    6'd0: v_bell = 8'h56; 6'd1: v_bell = 8'h49;
+                    6'd2: v_bell = 8'h53; 6'd3: v_bell = 8'h55;
+                    6'd4: v_bell = 8'h41; 6'd5: v_bell = 8'h4C;
+                    default: v_bell = 8'h20;
+                endcase
+            end else
+                v_bell = (i == 0) ? 8'h4F : (i == 1) ? 8'h46 :
+                         (i == 2) ? 8'h46 : 8'h20;                              // OFF
+        end
+    endfunction
+
     reg [7:0] body_ch;
     always @(*) begin
         if (page == 4'd0 && r == 6'd2 && c >= 7'd20)      body_ch = v_onoff(cursor_en, c[5:0] - 6'd20);
-        else if (page == 4'd0 && r == 6'd3 && c >= 7'd20) body_ch = v_echo(local_echo, c[5:0] - 6'd20);
-        else if (page == 4'd0 && r == 6'd4 && c >= 7'd20) body_ch = v_pal(pal_bright, c[5:0] - 6'd20);
+        else if (page == 4'd0 && r == 6'd3 && c >= 7'd20) body_ch = v_cstyle(cursor_style, c[5:0] - 6'd20);
+        else if (page == 4'd0 && r == 6'd4 && c >= 7'd20) body_ch = v_echo(local_echo, c[5:0] - 6'd20);
+        else if (page == 4'd0 && r == 6'd5 && c >= 7'd20) body_ch = v_pal(pal_bright, c[5:0] - 6'd20);
+        else if (page == 4'd0 && r == 6'd6 && c >= 7'd20) body_ch = v_bell(bell_en, c[5:0] - 6'd20);
         else body_ch = (rom_char == 8'h00) ? 8'h20 : rom_char;
     end
 
@@ -146,7 +193,7 @@ module menu (
             wattr = A_TITLE;
         end else begin
             wchar = body_ch;
-            if (page == 4'd0 && r >= 6'd2 && r <= 6'd9 && (r - 6'd2) == {2'b00, sel})
+            if (page == 4'd0 && r >= 6'd2 && r <= 6'd14 && (r - 6'd2) == {2'b00, sel})
                 wattr = A_HILITE;
             else
                 wattr = A_BODY;
@@ -162,7 +209,8 @@ module menu (
             r <= 6'd0; c <= 7'd0; phase <= 1'b0;
             active <= 1'b0; ov_we <= 1'b0;
             ov_addr <= 10'd0; ov_char <= 8'h20; ov_attr <= A_BODY;
-            cursor_en <= 1'b1; local_echo <= 2'd0; pal_bright <= 1'b0;
+            cursor_en <= 1'b1; cursor_style <= 1'b0; local_echo <= 2'd0;
+            pal_bright <= 1'b0; bell_en <= 1'b0;
             act_clear <= 1'b0; act_reset <= 1'b0;
         end else begin
             ov_we     <= 1'b0;
@@ -211,17 +259,22 @@ module menu (
                         sel <= (sel == MAXSEL) ? 4'd0 : sel + 4'd1;
                         r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW;
                     end else if (key_left || key_right) begin
-                        if (sel == 4'd0) cursor_en  <= ~cursor_en;
-                        if (sel == 4'd1) local_echo <= (local_echo == 2'd2) ? 2'd0 : local_echo + 2'd1;
-                        if (sel == 4'd2) pal_bright <= ~pal_bright;
+                        if (sel == 4'd0) cursor_en    <= ~cursor_en;
+                        if (sel == 4'd1) cursor_style <= ~cursor_style;
+                        if (sel == 4'd2) local_echo   <= (local_echo == 2'd2) ? 2'd0 : local_echo + 2'd1;
+                        if (sel == 4'd3) pal_bright   <= ~pal_bright;
+                        if (sel == 4'd4) bell_en      <= ~bell_en;
                         r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW;
                     end else if (key_enter) begin
                         case (sel)
-                        4'd3: act_clear <= 1'b1;
-                        4'd4: act_reset <= 1'b1;
-                        4'd5: begin page <= 4'd1; r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW; end
-                        4'd6: begin page <= 4'd2; r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW; end
-                        4'd7: state <= S_CLOSED;
+                        4'd5:  act_clear <= 1'b1;
+                        4'd6:  act_reset <= 1'b1;
+                        4'd7:  begin page <= 4'd1; r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW; end
+                        4'd8:  begin page <= 4'd2; r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW; end
+                        4'd9:  begin page <= 4'd3; r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW; end
+                        4'd10: begin page <= 4'd4; r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW; end
+                        4'd11: begin page <= 4'd5; r <= 6'd0; c <= 7'd0; phase <= 1'b0; state <= S_DRAW; end
+                        4'd12: state <= S_CLOSED;
                         default: ;
                         endcase
                     end

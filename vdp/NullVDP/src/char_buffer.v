@@ -18,7 +18,7 @@ module char_buffer (
     input            clk_wr,      // 27 MHz system clock
     input            wr_en,
     input      [11:0] wr_addr,    // 0..2399
-    input      [7:0]  wr_data,
+    input      [7:0]  wr_data
 );
 
     // 2400 x 8-bit BRAM

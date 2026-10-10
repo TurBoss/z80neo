@@ -1,4 +1,4 @@
-// NullVDP - Physical Constraints (UART + HDMI + PS/2)
+// NullVDP - Physical Constraints (SPI + HDMI + PS/2)
 IO_LOC "clk_27m" H11;
 IO_PORT "clk_27m" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC "rst_n" T10;
@@ -11,10 +11,6 @@ IO_LOC "led[2]" N14;
 IO_PORT "led[2]" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
 IO_LOC "led[3]" N16;
 IO_PORT "led[3]" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
-IO_LOC "uart_rx" T13;
-IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
-IO_LOC "uart_tx" M11;
-IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=UP DRIVE=8;
 IO_LOC "ps2_clk" T7;
 IO_PORT "ps2_clk" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC "ps2_data" P6;
@@ -22,10 +18,10 @@ IO_PORT "ps2_data" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
 // SPI link to the z80neo (NullVDP is slave) - Dock PMOD03 (banks 3/7, no
 // LVDS-bank conflict with the HDMI TMDS which forces banks 0/1 to LVDS):
-//   Pico GPIO37 SCK  -> N6  (IOR51A, bank 3)
+//   Pico GPIO36 SCK  -> N6  (IOR51A, bank 3)
 //   Pico GPIO35 MOSI -> A11 (IOL15A, bank 7)
 //   Pico GPIO34 MISO -> B11 (IOL13A, bank 7)
-//   Pico GPIO36 CS   -> D11 (IOL22A, bank 7)
+//   Pico GPIO37 CS   -> D11 (IOL22A, bank 7)
 IO_LOC "spi_sck" N6;
 IO_PORT "spi_sck" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC "spi_mosi" A11;

@@ -48,6 +48,24 @@ the host over the RX back-channel.  See `doc/nullvdp_spi_protocol.md` for the
 register map and pinout.  The Pico-side master lives in the z80neo firmware
 (`src/spi_vdp.c` + `src/spi_vdp.pio`).
 
+**Bitmap graphics (`ESC g`): done (phase 4).**  The `ESC g` commands
+(`common/z80neo_protocol.h`, `doc/vdp_protocol.md`) now draw into a 640×256
+bitmap layer stored as three 1-bit BSRAM planes (`src/gfx_buffer.v`,
+163840 = 10 blocks each).  `src/gfx_engine.v` plots pixels, Bresenham lines and
+filled rectangles (and clear/mode-on as a full-screen fill) into the planes;
+`src/terminal_handler.v` collects each command's payload and dispatches it,
+holding the console (`rx_ready` low) until the engine finishes.  The renderer
+(`src/text_controller.v`) shows the layer centred vertically (112-line bars)
+instead of the text grid while bitmap mode is active; the F12 menu still
+overlays on top.  The layer is **8 colours** (3bpp): the low 3 bits of a colour
+byte select palette entries 0–7.  This means the z88dk
+`+z80neo` graphics API (`z80neo_gfx_*`) and the `software/z80neo/demos/` run
+unchanged on the NullVDP.  `make sim-gfx` covers the command path.
+
+The text grid is left intact while bitmap mode is on and reappears when it is
+turned off.  Unlike the RP2350 VoidVDP, text is **not** yet rendered *into* the
+bitmap (printing while in graphics mode keeps writing the hidden text grid).
+
 **Options menu (F12): done.**  Open/close with F12; navigate with Up/Down;
 change a value with Left/Right; Enter runs the selected action or opens an info
 page; Esc backs out / closes.  Settings are applied live: **Cursor** visibility,
@@ -84,15 +102,18 @@ video, or the standalone USB bitstream for a USB keyboard without video.
 Verified:
 - `yosys synth_gowin` → `nextpnr-himbaechel` → `gowin_pack` → `nullvdp.fs`,
   flashed over the Sipeed JTAG debugger with `openFPGALoader -b tangprimer20k`.
-- Resource use: **1754 LUT4 (8%), 6/46 BSRAM, 1 rPLL**.
+- Resource use (with the bitmap layer): **3940 LUT4 (19%), 1312 DFF (8%),
+  39/46 BSRAM (84%), 1 rPLL**.
 - `make sim` (iverilog) exercises the boot clear, text + attributes, SGR,
   cursor/erase and scroll mapping — all pass.
+- `make sim-gfx` exercises the `ESC g` path (mode/clear/colour/pixel/line/fill)
+  end to end through `terminal_handler` → `gfx_engine` → `gfx_buffer`.
 - `sim/tb_video.v` checks the handler → buffers → renderer path end to end.
 
-Known limits: the font ROM is 128 glyphs (CP437 high bytes render as their low
-7 bits), scroll region (`CSI r`) and insert/delete are accepted but not
-implemented, and the `ESC g` bitmap layer is not drawn yet.  The input FIFO is
-currently bypassed (see below).
+Known limits: the bitmap layer is 8 colours (see phase 4 above) and text is not
+rendered into it; the font ROM is 128 glyphs (CP437 high bytes render as their
+low 7 bits); scroll region (`CSI r`) and insert/delete are accepted but not
+implemented.  The input FIFO is currently bypassed (see below).
 
 ## HDMI bring-up notes (GW2A + Dock)
 
@@ -168,7 +189,7 @@ decode + clock-domain crosser.
 ./build.sh sim             # iverilog simulation of the terminal handler
 # or, with oss-cad-suite already sourced:
 make ; make program ; make sim
-# other sims: make sim-menu sim-ps2 sim-usbkbd sim-ulpi sim-ulpi-host sim-spi
+# other sims: make sim-menu sim-ps2 sim-usbkbd sim-ulpi sim-ulpi-host sim-spi sim-gfx
 ```
 
 **Keep `SEED=3`.**  Placement seed 3 is required for this board's marginal
@@ -201,14 +222,17 @@ make ; make program ; make sim
 
 1. **Fork + bring-up** — done.
 2. **Colour text** — done (this stage).
-3. **SPI transport** — done.  `spi_slave.v` is a mode-0/16-bit-frame register
-   slave; the z80neo firmware has a C bit-bang SPI master (`spi_vdp.c`) with Z80
-   ports `0x94` (data) / `0x95` (status) and a console mirror so CP/M/Zeal/demos
-   work unchanged.  Spec: `doc/nullvdp_spi_protocol.md`.
-4. **Bitmap graphics (`ESC g`)** — 640×256 layer.  BSRAM is 46×18 Kbit =
-   828 Kbit; 4 bpp (16 colours) needs ~36 blocks, 2 bpp ~18, 1 bpp ~9 (plus
-   the 5 already used).  Choice depends on the desired fidelity; external
-   DDR3 is the escape hatch if a full 8-bit framebuffer is ever needed.
+3. **SPI transport** — done. `spi_slave.v` is a mode-0/32-bit framed slave
+   with CRC-8 and sequence acknowledgements; the z80neo firmware has a PIO SPI
+   master (`spi_vdp.c`) with Z80 ports `0x94` (data) / `0x95` (status) and a
+   console mirror so CP/M/Zeal/demos work unchanged. Spec:
+   `doc/nullvdp_spi_protocol.md`.
+4. **Bitmap graphics (`ESC g`)** — done.  640×256 layer as three 1-bit BSRAM
+   planes (10 blocks each, 30 total) → **8 colours** (3bpp).  4 bpp (16
+   colours) would need ~36 blocks and does not fit the 46-block BSRAM
+   alongside the text/overlay buffers; external SDRAM would be the escape hatch
+   for a full 8-bit framebuffer.  Line/fill/clear run in hardware
+   (`gfx_engine.v`); no text-into-bitmap yet.
 5. **Keyboard** — PS/2 (PMOD) types into the local console and drives the F12
    menu, coexisting with HDMI.  A USB **host** on the Dock OTG port/USB3317 is
    implemented (`usb_kbd_top`) but, being in the same banks as the HDMI TMDS
@@ -219,23 +243,27 @@ make ; make program ; make sim
 
 | Path | Purpose |
 |------|---------|
-| `src/nullvdp_top.v` | top: PLL, UART, terminal, video, TMDS |
+| `src/nullvdp_top.v` | top: PLL, SPI, terminal, video, TMDS |
 | `src/terminal_handler.v` | byte stream → char/attr buffers, cursor, scroll |
 | `src/text_controller.v` | 640×480 timing + colour rendering pipeline (12-bit addr) |
 | `src/font_rom.v` | 8×16 font (128 glyphs) |
 | `src/char_buffer.v` | dual-port BRAM text buffer (80×30, 12-bit addr) |
 | `src/attr_buffer.v` | dual-port BRAM attribute buffer (fg/bg/flags) |
+| `src/gfx_buffer.v` | dual-port BRAM bitmap layer (3× 1-bit planes, 640×256) |
+| `src/gfx_engine.v` | `ESC g` drawing sequencer (pixel/line/fill/clear) |
 | `src/palette.v` | 16-colour CGA/ANSI palette |
 | `src/hdmi_pll.v`, `src/pll480.v` | clocking: 27 MHz → 126/25.2 MHz (PLL480 + CLKDIV/5) |
 | `src/tmds_channel.v` | Sameer Puri's TMDS encoder (SystemVerilog) |
 | `src/tmds_serializer.v`, `src/tmds_clock_serializer.v` | OSER10 + TLVDS_OBUF output |
 | `src/uart_rx.v`, `src/uart_tx.v`, `src/sync_cursor.v` | UART + cursor/scroll CDC |
 | `src/spi_slave.v` | z80neo SPI link slave (console in, keyboard back-channel) |
-| `sim/tb_spi.v` | iverilog SPI master/slave register test (`make sim-spi`) |
+| `sim/tb_spi.v` | iverilog framed SPI master/slave test (`make sim-spi`) |
+| `sim/tb_spi_gfx.v` | framed SPI → terminal → graphics replay test (`make sim-spi-gfx`) |
 | `src/nullvdp.cst` | pin constraints |
 | `src/input_fifo.v`, `src/tmds_encoder.v` | kept but currently unused |
 | `sim/tb_terminal.v` | iverilog testbench for the protocol parser |
 | `sim/tb_video.v` | iverilog handler→buffers→render test |
+| `sim/tb_gfx.v` | iverilog `ESC g` command-path test (`make sim-gfx`) |
 | `src/ulpi_link.v` | ULPI register window + USB packet TX/RX (single pad owner) |
 | `src/ulpi_host.v` | USB host FSM: PHY init, bus reset, enumeration, HID polling |
 | `src/usb_key_cdc.v` | USB key event CDC (ULPI clock → 27 MHz) |

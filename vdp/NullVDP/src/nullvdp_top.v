@@ -1,13 +1,15 @@
 // ============================================================================
-// NullVDP - Top module (UART + HDMI + PS/2 keyboard)
+// NullVDP - Top module (SPI + HDMI + PS/2 keyboard)
 //
 // USB OTG (ULPI) is intentionally NOT instantiated: the USB3317 ULPI pins share
 // FPGA IO banks 0/1 with the HDMI TMDS pins, which the open-source Gowin flow
 // cannot mix, so adding the ULPI host kills the HDMI output.  PS/2 lives in
 // bank 2/3 and coexists with HDMI.
+//
+// The bring-up UART console was removed; the console arrives over SPI.
 // ============================================================================
 module nullvdp_top (
-    input clk_27m, input rst_n, input uart_rx, output uart_tx,
+    input clk_27m, input rst_n,
     input ps2_clk, input ps2_data,
     input spi_sck, input spi_mosi, input spi_cs_n, output spi_miso,
     output [3:0] led,
@@ -21,7 +23,7 @@ module nullvdp_top (
     reg [7:0] por_cnt;
     always @(posedge clk_27m) if (por_cnt != 8'hFF) por_cnt <= por_cnt + 8'd1;
     wire clk27_rst_n = rst_n & (por_cnt == 8'hFF);
-    assign led[0]=pll_lock; assign led[2]=menu_active; assign led[3]=hdmi_rst_n;
+    assign led[0]=pll_lock; assign led[2]=menu_active | gfx_active_sys; assign led[3]=hdmi_rst_n;
 
     wire [11:0] ca, aa, cwa, awa;
     wire [7:0]  cd, cwd;
@@ -34,7 +36,7 @@ module nullvdp_top (
     wire [7:0]  ps2_ascii_data;
     wire        ps2_ascii_valid;
     wire        menu_active, menu_box_open;
-    wire        menu_cursor_en, menu_pal_bright;
+    wire        menu_cursor_en, menu_cursor_style, menu_pal_bright, menu_bell_en;
     wire [1:0]  menu_local_echo;
     wire        menu_act_clear, menu_act_reset;
     wire        ov_we;
@@ -44,42 +46,18 @@ module nullvdp_top (
     wire [9:0]  ov_rd_addr;
     wire [7:0]  ov_rd_char;
     wire [15:0] ov_rd_attr;
-    wire [7:0] uart_byte;
-    wire       uart_valid;
-    uart_rx #(.CLK_FRE(27), .BAUD_RATE(115200)) u_uart_rx (
-        .clk(clk_27m), .rst_n(clk27_rst_n), .rx_pin(uart_rx),
-        .rx_data(uart_byte), .rx_data_valid(uart_valid), .rx_data_ready(1'b1)
-    );
     reg [23:0] uart_led_timer;
     always @(posedge clk_27m or negedge clk27_rst_n) begin
         if (!clk27_rst_n) uart_led_timer <= 24'd0;
-        else if (uart_valid || ps2_ascii_valid || spi_active) uart_led_timer <= 24'hFFFFFF;
+        else if (ps2_ascii_valid || spi_active) uart_led_timer <= 24'hFFFFFF;
         else if (uart_led_timer > 0) uart_led_timer <= uart_led_timer - 24'd1;
     end
     assign led[1] = |uart_led_timer;
-    wire tx_busy, tx_data_ready; reg tx_data_valid; reg [7:0] tx_data;
-    uart_tx #(.CLK_FRE(27), .BAUD_RATE(115200)) u_uart_tx (
-        .clk(clk_27m), .rst_n(clk27_rst_n), .tx_pin(uart_tx), .tx_data(tx_data),
-        .tx_data_valid(tx_data_valid), .tx_data_ready(tx_data_ready), .tx_busy(tx_busy)
-    );
-    always @(posedge clk_27m or negedge clk27_rst_n) begin
-        if (!clk27_rst_n) begin tx_data_valid <= 1'b0; tx_data <= 8'd0; end
-        else if (tx_data_valid && tx_data_ready) tx_data_valid <= 1'b0;
-        else if (!tx_data_valid) begin
-            if (ps2_ascii_valid && !menu_active) begin   // menu consumes keys locally
-                tx_data <= ps2_ascii_data; tx_data_valid <= 1'b1;
-            end else if (uart_valid) begin
-                tx_data <= uart_byte; tx_data_valid <= 1'b1;
-            end
-        end
-    end
 
-    // Console input is merged from three sources, highest priority first:
+    // Console input is merged from two sources, highest priority first:
     //   1. SPI (the z80neo host drives the display over the SPI link)
     //   2. PS/2 keys, so they type locally on the HDMI screen
-    //   3. UART0 (bring-up / legacy)
-    // PS/2 bytes also fill the SPI RX FIFO so the host can read the keyboard;
-    // they are still forwarded to the host over uart_tx below.
+    // PS/2 bytes also fill the SPI RX FIFO so the host can read the keyboard.
     wire       th_rx_ready;
     wire [7:0] spi_tx_byte;
     wire       spi_tx_valid;
@@ -142,13 +120,24 @@ module nullvdp_top (
     wire [7:0] inj_ch = inj_buf[inj_idx];
 
     wire [7:0] rx_byte  = inj_active ? inj_ch :
-                          spi_tx_valid ? spi_tx_byte : (kb_local ? kb_hold : uart_byte);
-    wire       rx_valid = inj_active | spi_tx_valid | kb_local | uart_valid;
+                          spi_tx_valid ? spi_tx_byte : kb_hold;
+    wire       rx_valid = inj_active | spi_tx_valid | kb_local;
 
     wire [6:0] term_cursor_x;
     wire [5:0] term_cursor_y;
     wire       term_cursor_vis;
     wire [5:0] term_scroll_off;
+    wire        gfx_active_sys;
+    wire [2:0]  gfx_fg, gfx_bg;
+    wire        gfx_start;
+    wire [1:0]  gfx_shape;
+    wire [2:0]  gfx_colour;
+    wire [10:0] gfx_ax, gfx_bx;
+    wire [8:0]  gfx_ay, gfx_by;
+    wire        gfx_busy;
+    wire [2:0]  gfx_we, gfx_wdata;
+    wire [17:0] gfx_waddr;
+    wire        th_bell;
     terminal_handler th (
         .clk(clk_27m), .rst_n(clk27_rst_n),
         .rx_data(rx_byte), .rx_valid(rx_valid), .rx_ready(th_rx_ready),
@@ -157,7 +146,19 @@ module nullvdp_top (
         .cursor_x(term_cursor_x), .cursor_y(term_cursor_y),
         .cursor_visible(term_cursor_vis), .scroll_off(term_scroll_off),
         .key_toggle(k_toggle), .key_up(k_up), .key_down(k_down),
-        .key_enter(k_enter), .key_esc(k_esc)
+        .key_enter(k_enter), .key_esc(k_esc),
+        .gfx_active(gfx_active_sys), .gfx_fg(gfx_fg), .gfx_bg(gfx_bg),
+        .gfx_start(gfx_start), .gfx_shape(gfx_shape), .gfx_colour(gfx_colour),
+        .gfx_ax(gfx_ax), .gfx_ay(gfx_ay), .gfx_bx(gfx_bx), .gfx_by(gfx_by),
+        .gfx_busy(gfx_busy), .bell(th_bell)
+    );
+
+    gfx_engine u_gfxeng (
+        .clk(clk_27m), .rst_n(clk27_rst_n),
+        .start(gfx_start), .shape(gfx_shape), .colour(gfx_colour),
+        .ax(gfx_ax), .ay(gfx_ay), .bx(gfx_bx), .by(gfx_by),
+        .busy(gfx_busy),
+        .we(gfx_we), .waddr(gfx_waddr), .wdata(gfx_wdata)
     );
 
     ps2_host u_ps2 (
@@ -191,6 +192,7 @@ module nullvdp_top (
         .key_esc(ps2_esc | (k_esc & ~menu_active)),
         .active(menu_active), .box_open(menu_box_open),
         .cursor_en(menu_cursor_en), .local_echo(menu_local_echo),
+        .cursor_style(menu_cursor_style), .bell_en(menu_bell_en),
         .pal_bright(menu_pal_bright),
         .act_clear(menu_act_clear), .act_reset(menu_act_reset),
         .ov_we(ov_we), .ov_addr(ov_addr), .ov_char(ov_char), .ov_attr(ov_attr)
@@ -224,15 +226,45 @@ module nullvdp_top (
         .clk_wr(clk_27m), .wr_en(awe), .wr_addr(awa), .wr_data(awd)
     );
 
+    wire [17:0] gfx_rd_addr;
+    wire [2:0]  gfx_rd_data;
+    gfx_buffer u_gfx (
+        .clk_rd(pix_clk), .rd_addr(gfx_rd_addr), .rd_data(gfx_rd_data),
+        .clk_wr(clk_27m), .we(gfx_we), .wr_addr(gfx_waddr), .wr_data(gfx_wdata)
+    );
+
+    // bitmap-mode flag crosses from the system to the pixel clock domain
+    reg gfx_act_meta, gfx_act_pix;
+    always @(posedge pix_clk or negedge hdmi_rst_n) begin
+        if (!hdmi_rst_n) begin gfx_act_meta <= 1'b0; gfx_act_pix <= 1'b0; end
+        else begin gfx_act_meta <= gfx_active_sys; gfx_act_pix <= gfx_act_meta; end
+    end
+
+    // visual bell: stretch a one-cycle BEL pulse into a ~150 ms whole-frame flash
+    reg bell_meta, bell_sync;
+    reg [22:0] bell_cnt;
+    always @(posedge pix_clk or negedge hdmi_rst_n) begin
+        if (!hdmi_rst_n) begin
+            bell_meta <= 1'b0; bell_sync <= 1'b0; bell_cnt <= 23'd0;
+        end else begin
+            bell_meta <= th_bell;
+            bell_sync <= bell_meta;
+            if (bell_sync)              bell_cnt <= 23'h7FFFFF;   // reload the flash
+            else if (bell_cnt != 23'd0) bell_cnt <= bell_cnt - 23'd1;
+        end
+    end
+    wire bell_act_pix = menu_bell_en && (bell_cnt != 23'd0);
+
     wire hs, vs, de;
     wire [7:0] r, g, b;
     text_controller u_tc (
         .clk(pix_clk), .rst_n(hdmi_rst_n),
         .cursor_x(cur_x_s), .cursor_y(cur_y_s), .cursor_visible(cur_vis_s), .scroll_off(off_s),
-        .pal_bright(menu_pal_bright),
+        .cursor_style(menu_cursor_style), .pal_bright(menu_pal_bright), .bell(bell_act_pix),
         .char_addr(ca), .char_data(cd), .attr_addr(aa), .attr_data(ad),
         .menu_active(menu_active),
         .ov_rd_addr(ov_rd_addr), .ov_rd_char(ov_rd_char), .ov_rd_attr(ov_rd_attr),
+        .gfx_active(gfx_act_pix), .gfx_addr(gfx_rd_addr), .gfx_data(gfx_rd_data),
         .hsync(hs), .vsync(vs), .de(de), .red(r), .green(g), .blue(b)
     );
 

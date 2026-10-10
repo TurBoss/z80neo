@@ -319,14 +319,14 @@ Windows `tools/CPMTG(English)/CpmtoolsGUI.exe`.
   The **NullVDP SPI link** (`src/spi_vdp.c`, polled from the main loop) adds
   ports `0x94` (write = console byte to the FPGA VDP) and `0x95` (read = link
   status: bit0 TX ready, bit1 RX available, bit7 present). It is a software
-  bit-banged SPI master (mode 0, 16-bit `{CMD,DATA}`/`{STATUS,RDATA}` frames,
-  MISO/MOSI/SCK/CS = GPIO34/35/36/37) to the Tang Primer 20K NullVDP: every
-  console byte drained from the TX ring is mirrored to it, and keyboard bytes
-  it reports are injected into the console RX ring (`console_inject_rx`, which
-  bypasses the local-echo filter). The link is enabled only if the slave's `ID`
-  register answers `0x4E` (`VDP_ID_VALUE`), so an unwired link (MISO pulled
-  down) stays inert. (`src/spi_vdp.pio` is a not-yet-wired PIO variant; the
-  current master is the C bit-bang.)
+   PIO SPI master (mode 0, acknowledged 32-bit frames with CRC-8,
+   MISO/MOSI/SCK/CS = GPIO34/35/36/37) to the Tang Primer 20K NullVDP: every
+   console byte drained from the TX ring is mirrored to it, and keyboard bytes
+   it reports are injected into the console RX ring (`console_inject_rx`, which
+   bypasses the local-echo filter). Invalid frames are retried and duplicate
+   sequence numbers are suppressed by the FPGA, so a physical error cannot
+   desynchronize the console parser. The link is enabled only if the slave
+   response carries ID `0x4E` (`VDP_ID_VALUE`).
 - **Clock / reset** — `src/z80clock.pio` generates the Z80 clock on **GPIO32**
   (`GPIO_PWM_SIG`); the PIO output pin is a parameter so the define is honoured.
   `CPU_SPEED` in `main.c` is the frequency and `CPU_DUTY` is the HIGH-time
@@ -513,9 +513,10 @@ openFPGALoader), HDMI 640×480 output.  It is a fork of the local
 `tangprimer20k-oss-examples/dummy_terminal` example and is being grown into a
 hardware implementation of the same console protocol the RP2350 VoidVDP speaks
 (`doc/vdp_protocol.md`, `common/z80neo_protocol.h`), driven over **SPI** instead
-of UART.  Build/program/sim: `./build.sh [program|sim]`.  Phase 2 (colour text:
+of UART.  Build/program/sim: `./build.sh [program|sim]`; extra sims include
+`make sim-gfx` (the `ESC g` path).  Phase 2 (colour text:
 per-cell fg/bg + 16-colour palette, SGR, cursor/erase, hardware scroll, input
-FIFO, `ESC g` payload consumption) is done and covered by `sim/tb_terminal.v`.
+FIFO) is done and covered by `sim/tb_terminal.v`.
 Phase 3 (**SPI** — `src/spi_slave.v` plus the firmware master `src/spi_vdp.c`
 and Z80 ports `0x94`/`0x95`) is done: SPI console bytes (highest priority) feed
 the terminal and PS/2 keyboard bytes are pushed to the host RX FIFO; see
@@ -523,8 +524,20 @@ the terminal and PS/2 keyboard bytes are pushed to the host RX FIFO; see
 MISO B11, CS D11; Pico GPIO36/35/34/37).  It **must not** use bank-0/1 balls
 (e.g. PMOD02's D14 = `1/IOT44A`): the HDMI TMDS runs over true-LVDS, which forces
 banks 0/1 into LVDS mode, so those balls cannot do single-ended LVCMOS while HDMI
-is active and the SPI clock silently dies.  Phase 4 (`ESC g` bitmap layer) is
-still to do.
+is active and the SPI clock silently dies.
+Phase 4 (**`ESC g` bitmap layer**) is **done**: `src/gfx_buffer.v` holds three
+1-bit 640×256 bitplanes (30 BSRAM blocks; the whole design is 39/46, ~19% LUT),
+`src/gfx_engine.v` draws pixel/Bresenham-line/fill/clear, `src/terminal_handler.v`
+collects each command payload and stalls the console until the engine is done,
+and `src/text_controller.v` shows the layer centred (112-line bars) instead of
+the text grid while active (the F12 menu still overlays).  It is **8 colours**
+(3bpp — the low 3 bits of a colour byte pick palette 0–7); 16-colour 4bpp would
+need ~36 blocks and does not fit BSRAM next to the text/overlay buffers.  Text is
+not rendered into the bitmap (the text grid is kept and reappears on mode off).
+Because the layer speaks the shared protocol, the z88dk `+z80neo` graphics API
+(`software/z88dk/libsrc/target/z80neo/gfx/z80neo_gfx.c`) and
+`software/z80neo/demos/` run on the NullVDP unchanged (colours 8–15 map to 0–7);
+`make sim-gfx` covers it (`sim/tb_gfx.v`).
 The F12 options menu sets `cursor_en` / `local_echo` / `pal_bright`.
 **Local echo** is three-state **AUTO / ON / OFF** (default AUTO): AUTO echoes
 PS/2 keys locally only when the z80neo host is *not* driving the display, ON

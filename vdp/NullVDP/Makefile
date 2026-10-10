@@ -36,13 +36,13 @@ VERILOG_SRCS := $(SRC_DIR)/nullvdp_top.v \
                 $(SRC_DIR)/font_rom.v \
                 $(SRC_DIR)/char_buffer.v \
                 $(SRC_DIR)/attr_buffer.v \
+                $(SRC_DIR)/gfx_buffer.v \
+                $(SRC_DIR)/gfx_engine.v \
                 $(SRC_DIR)/palette.v \
                 $(SRC_DIR)/terminal_handler.v \
                 $(SRC_DIR)/menu.v \
                 $(SRC_DIR)/menu_rom.v \
                 $(SRC_DIR)/overlay_ram.v \
-                $(SRC_DIR)/uart_rx.v \
-                $(SRC_DIR)/uart_tx.v \
                 $(SRC_DIR)/ps2_host.v \
                 $(SRC_DIR)/ps2_keys.v \
                 $(SRC_DIR)/ps2_ascii.v \
@@ -61,7 +61,7 @@ JSON := $(PROJECT).json
 PNR_JSON := $(PROJECT)_pnr.json
 BITSTREAM := $(PROJECT).fs
 
-.PHONY: all synth pnr pack program ident ident-program spitest-program sim sim-menu sim-ps2 sim-usbkbd sim-ulpi sim-ulpi-host sim-spi clean help
+.PHONY: all synth pnr pack program ident ident-program spitest-program sim sim-menu sim-ps2 sim-usbkbd sim-ulpi sim-ulpi-host sim-spi sim-gfx sim-spi-gfx clean help
 
 all: $(BITSTREAM)
 
@@ -154,6 +154,22 @@ sim-spi:
 	iverilog -g2005 -o tb_spi sim/tb_spi.v $(SRC_DIR)/spi_slave.v
 	vvp tb_spi
 	@rm -f tb_spi
+
+sim-gfx:
+	@echo "=== Simulating the ESC g graphics path ==="
+	iverilog -g2005 -o tb_gfx sim/tb_gfx.v \
+	    $(SRC_DIR)/terminal_handler.v $(SRC_DIR)/gfx_engine.v $(SRC_DIR)/gfx_buffer.v
+	vvp tb_gfx
+	@rm -f tb_gfx
+
+sim-spi-gfx:
+	@echo "=== Simulating SPI to ESC g graphics path ==="
+	iverilog -g2005 -o tb_spi_gfx sim/tb_spi_gfx.v \
+	    $(SRC_DIR)/spi_slave.v $(SRC_DIR)/terminal_handler.v \
+	    $(SRC_DIR)/gfx_engine.v $(SRC_DIR)/gfx_buffer.v $(SRC_DIR)/char_buffer.v
+	@echo "Provide /tmp/opencode/stream.hex to replay a byte stream"
+	vvp tb_spi_gfx
+	@rm -f tb_spi_gfx
 
 clean:
 	rm -f $(JSON) $(PNR_JSON) $(BITSTREAM) tb_menu tb_usbkbd
